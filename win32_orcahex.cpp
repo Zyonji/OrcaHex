@@ -4,9 +4,10 @@
 #include <windows.h>
 #include <GL/gl.h>
 #include "wintab.h"
-// TODO(Zyonji): Check for use of PK_ROTATION
-#define PACKETDATA (PK_TIME | PK_X | PK_Y | PK_Z | PK_BUTTONS | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_CURSOR)
+#define PACKETDATA (PK_X | PK_Y | PK_Z | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_TIME | PK_BUTTONS)
+//(PK_X | PK_Y | PK_Z | PK_NORMAL_PRESSURE | PK_TANGENT_PRESSURE | PK_ORIENTATION | PK_TIME | PK_BUTTONS | PK_CURSOR)
 #define PACKETMODE 0
+#define PACKETTOUCHRING PKEXT_ABSOLUTE
 #include "pktdef.h"
 #include "FreeImage.h"
 
@@ -136,10 +137,10 @@ OpenGLGlobalFunction(glBindVertexArray)
 
 OpenGLGlobalFunction(glBlendColor)
 
-internal void
+internal b32
 LoadOpenGLFunctions()
 {
-#define Win32GetOpenGLFunction(Name) Name = (type_##Name *)wglGetProcAddress(#Name)
+#define Win32GetOpenGLFunction(Name) if((Name = (type_##Name *)wglGetProcAddress(#Name)) == 0) return false
     Win32GetOpenGLFunction(glBindFramebuffer);
     Win32GetOpenGLFunction(glUseProgram);
     Win32GetOpenGLFunction(glEnableVertexAttribArray);
@@ -176,6 +177,8 @@ LoadOpenGLFunctions()
     Win32GetOpenGLFunction(glUniform2iv);
     Win32GetOpenGLFunction(glBlendColor);
     Win32GetOpenGLFunction(glGenerateMipmap);
+    
+    return true;
 }
 
 #include "opengl_orcahex.cpp"
@@ -215,11 +218,11 @@ WinTabGlobalFunction(WTRestore)
 WinTabGlobalFunction(WTDataPeek)
 WinTabGlobalFunction(WTQueueSizeSet)
 
-internal void
+internal b32
 LoadWintabFunctions()
 {
-    HINSTANCE ghWintab = LoadLibraryA("Wintab32.dll");
-#define GETPROCADDRESS(func) gp##func = (type_##func)GetProcAddress(ghWintab, #func);
+    HINSTANCE Wintab32 = LoadLibraryA("Wintab32.dll");
+#define GETPROCADDRESS(Name) if((gp##Name = (type_##Name)GetProcAddress(Wintab32, #Name)) == 0) return false
     GETPROCADDRESS(WTOpenA);
     GETPROCADDRESS(WTInfoA);
     GETPROCADDRESS(WTGetA);
@@ -236,6 +239,8 @@ LoadWintabFunctions()
     GETPROCADDRESS(WTQueueSizeSet);
     GETPROCADDRESS(WTDataPeek);
     GETPROCADDRESS(WTPacketsGet);
+    
+    return true;
 }
 
 struct window_mapping
@@ -245,6 +250,7 @@ struct window_mapping
     v2 Offset;
     v3 AxisMax;
     r32 PressureMax;
+    r32 TouchRingMax;
 };
 
 struct window_data
@@ -257,6 +263,7 @@ struct window_data
 struct image_data
 {
     char NameBase[MAX_PATH]; // NOTE(Zyonji): YY-MM-DD_IIIIIIII_?min.jpg
+    char ReplayPath[MAX_PATH];
     FIBITMAP *Bitmap;
     void *Memory;
     u32 Id;
@@ -265,15 +272,27 @@ struct image_data
     u32 Minutes;
 };
 
+struct replay_header
+{
+    u32 Version;
+    u32 Magic;
+    u32 Count;
+    char BaseFile[MAX_PATH];
+};
+
 struct win32_orca_state : orca_state
 {
     open_gl OpenGL;
-    char IniPath[MAX_PATH];
-    
     window_mapping Map;
     window_data WindowData;
     image_data Image;
+    replay_header *ReplayHeader;
+    HWND StreamWindow;
     b32 Active;
+    s64 LastFrameTime;
+    r32 PerformanceFrequency;
+    u64 LastPenTime;
+    char IniPath[MAX_PATH];
 };
 
 struct initial_state
@@ -290,6 +309,7 @@ struct initial_state
 };
 
 global win32_orca_state *OrcaState;
+global b32 ReplayModeChange;
 
 internal void
 LogError(char *Text, char *Caption)
@@ -344,45 +364,60 @@ LogError(char *Text, char *Caption)
 internal b32
 InitWinTab(HWND Window, window_mapping *Map)
 {
-    b32 Result = false;
+    if(!LoadWintabFunctions())
+        return false;
     
-    LoadWintabFunctions();
+    WTPKT TouchRingMask = 0;
+	UINT TouchRingIndex = 0xFFFFFFFF;
+    for(UINT i = 0, ExtensionTag = 0; gpWTInfoA(WTI_EXTENSIONS + i, EXT_TAG, &ExtensionTag); i++)
+    {
+        if(ExtensionTag == WTX_TOUCHRING)
+        {
+            TouchRingIndex = i;
+        }
+    }
+    
+    if(TouchRingIndex != 0xFFFFFFFF)
+    {
+        gpWTInfoA(WTI_EXTENSIONS + TouchRingIndex, EXT_MASK, &TouchRingMask);
+        AXIS TouchRing;
+        gpWTInfoA(WTI_EXTENSIONS + TouchRingIndex, EXT_AXES, &TouchRing);
+        Map->TouchRingMax = (r32)TouchRing.axMax + 1;
+	}
     
     LOGCONTEXT Tablet;
-    gpWTInfoA(WTI_DEFCONTEXT, 0, &Tablet);
-    // TODO(Zyonji): check if I would need to enable in the Options to see the touch ring messages.
-    Tablet.lcOptions |= CXO_MESSAGES;
-    Tablet.lcPktData = PACKETDATA;
+    if(!gpWTInfoA(WTI_DEFCONTEXT, 0, &Tablet))
+        return false;
+    
+    Tablet.lcOptions |= CXO_MESSAGES; //CXO_CSRMESSAGES for handling multiple cursors.
+    Tablet.lcPktData = Tablet.lcMoveMask = PACKETDATA | TouchRingMask;
     Tablet.lcPktMode = PACKETMODE;
-    Tablet.lcMoveMask = PACKETDATA;
     Tablet.lcBtnUpMask = Tablet.lcBtnDnMask;
+    Tablet.lcOutOrgX = 0;
+    Tablet.lcOutExtX = Tablet.lcInExtX;
+    Tablet.lcOutOrgY = 0;
+    Tablet.lcOutExtY = Tablet.lcInExtY;
     
-    AXIS TabletX;
-    AXIS TabletY;
-    AXIS TabletZ;
-    AXIS Pressure;
-    
-    gpWTInfoA(WTI_DEVICES, DVC_X, &TabletX);
-    gpWTInfoA(WTI_DEVICES, DVC_Y, &TabletY);
-    gpWTInfoA(WTI_DEVICES, DVC_Z, &TabletZ);
+    AXIS Pressure; //, Orientation[3];
     gpWTInfoA(WTI_DEVICES, DVC_NPRESSURE, &Pressure);
-    Tablet.lcInOrgX = 0;
-    Tablet.lcInOrgY = 0;
-    Tablet.lcInExtX = TabletX.axMax;
-    Tablet.lcInExtY = TabletY.axMax;
+    //gpWTInfoA(WTI_DEVICES, DVC_ORIENTATION, &Orientation);
     
-    Map->AxisMax.x = (r32)TabletX.axMax;
-    Map->AxisMax.y = (r32)TabletY.axMax;
-    Map->AxisMax.z = (r32)TabletZ.axMax;
+    if(!Pressure.axMax)
+        return false;
+    
+    Map->AxisMax.x = (r32)Tablet.lcOutExtX;
+    Map->AxisMax.y = (r32)Tablet.lcOutExtY;
+    Map->AxisMax.z = (r32)Tablet.lcOutExtZ;
     Map->PressureMax = (r32)Pressure.axMax;
     
-    Result = (gpWTOpenA(Window, &Tablet, TRUE) != 0) && TabletX.axMax && TabletY.axMax && TabletZ.axMax && Pressure.axMax;
+    if(!gpWTOpenA(Window, &Tablet, TRUE))
+        return false;
     
-    return(Result);
+    return true;
 }
 
 internal void
-SetPixelFormat(open_gl *OpenGL, HDC WindowDC)
+SetPixelFormat(HDC WindowDC)
 {
     int MatchingPixelFormatIndex = 0;
     GLuint ExtendedPick = 0;
@@ -420,7 +455,7 @@ SetPixelFormat(open_gl *OpenGL, HDC WindowDC)
     SetPixelFormat(WindowDC, MatchingPixelFormatIndex, &MatchingPixelFormat);
 }
 internal void
-LoadWGLExtensions(open_gl *OpenGL)
+LoadWGLExtensions()
 {
     WNDCLASSA WindowClass = {};
     WindowClass.lpfnWndProc = DefWindowProcA;
@@ -444,7 +479,7 @@ LoadWGLExtensions(open_gl *OpenGL)
             0);
         
         HDC WindowDC = GetDC(Window);
-        SetPixelFormat(OpenGL, WindowDC);
+        SetPixelFormat(WindowDC);
         HGLRC OpenGLRC = wglCreateContext(WindowDC);
         if(wglMakeCurrent(WindowDC, OpenGLRC))
         {
@@ -461,8 +496,9 @@ LoadWGLExtensions(open_gl *OpenGL)
 internal b32
 InitOpenGL(open_gl *OpenGL, HDC WindowDC)
 {
-    LoadWGLExtensions(OpenGL);
-    SetPixelFormat(OpenGL, WindowDC);
+    LoadWGLExtensions();
+    
+    SetPixelFormat(WindowDC);
     
     b32 ModernContext = true;
     HGLRC OpenGLRC = 0;
@@ -487,69 +523,11 @@ InitOpenGL(open_gl *OpenGL, HDC WindowDC)
     
     if(wglMakeCurrent(WindowDC, OpenGLRC))
     {
-        LoadOpenGLFunctions();
+        if(!LoadOpenGLFunctions())
+            return false;
         
-        if(glEnableVertexAttribArray && 
-           glDisableVertexAttribArray && 
-           glVertexAttribPointer && 
-           glCreateShader && 
-           glShaderSource && 
-           glCompileShader && 
-           glAttachShader && 
-           glDeleteShader && 
-           glCreateProgram && 
-           glLinkProgram && 
-           glValidateProgram && 
-           glUseProgram && 
-           glGetProgramiv && 
-           glGetShaderInfoLog && 
-           glGetProgramInfoLog && 
-           glGetAttribLocation && 
-           glGetUniformLocation && 
-           glUniformMatrix4fv && 
-           glUniform1f && 
-           glUniform2fv && 
-           glUniform4fv && 
-           glUniform2iv)
-        {
-            if(glBindFramebuffer && 
-               glGenFramebuffers && 
-               glFramebufferTexture2D && 
-               glDeleteFramebuffers && 
-               glActiveTexture && 
-               glGenerateMipmap)
-            {
-                if(glDrawBuffers && 
-                   glGenBuffers && 
-                   glBindBuffer && 
-                   glBufferData && 
-                   glBufferSubData && 
-                   glGenVertexArrays && 
-                   glBindVertexArray)
-                {
-                    if(glBlendColor)
-                    {
-                        OpenGL->Initialized = OpenGLInitPrograms(OpenGL);
-                    }
-                    else
-                    {
-                        LogError("Unable to set blend modes.", "OpenGL");
-                    }
-                }
-                else
-                {
-                    LogError("Unable to set brush shape.", "OpenGL");
-                }
-            }
-            else
-            {
-                LogError("Unable to draw on textures.", "OpenGL");
-            }
-        }
-        else
-        {
-            LogError("Unable to use custom shaders.", "OpenGL");
-        }
+        OpenGL->Initialized = OpenGLInitPrograms(OpenGL);
+        OpenGL->RenderingContext = OpenGLRC;
     }
     else
     {
@@ -557,6 +535,28 @@ InitOpenGL(open_gl *OpenGL, HDC WindowDC)
     }
     
     return(OpenGL->Initialized);
+}
+
+internal u64
+GetFileTime()
+{
+    u64 Result;
+    SYSTEMTIME SystemTime;
+    FILETIME FileTime;
+    GetSystemTime(&SystemTime);
+    SystemTimeToFileTime(&SystemTime, &FileTime);
+    Result = (((u64) FileTime.dwHighDateTime) << 32) | ((u64) FileTime.dwLowDateTime);
+    return(Result);
+}
+
+internal u32
+SecondsPassed(u64 *LastTime)
+{
+    u32 Result;
+    u64 CurrentTime = GetFileTime();
+    Result = (u32)((CurrentTime - *LastTime) / 10000000);
+    *LastTime = CurrentTime;
+    return(Result);
 }
 
 internal char*
@@ -640,11 +640,18 @@ LoadImage(char* Filename, u32 MaxId)
         return(Result);
     }
     
+    char ReplayFile[MAX_PATH];
     char *At = Filename;
-    for(; *At; ++At)
+    char *To = ReplayFile;
+    while(*At)
     {
-        
+        *To++ = *At++;
     }
+    *To = 0;
+    *--To = 'x';
+    *--To = '6';
+    *--To = 'o';
+    
     char FilePathMask[MAX_PATH];
     CreateFilePathMask(FilePathMask, Filename, At);
     At -= 8;
@@ -659,7 +666,7 @@ LoadImage(char* Filename, u32 MaxId)
         if(*At-- == '_')
         {
             Order = 1;
-            char *To = Result.NameBase + 44;
+            To = Result.NameBase + 44;
             for(u32 I = 0; I < 8; ++I, --To, --At)
             {
                 Result.Id += Order * (*At - '0');
@@ -687,6 +694,29 @@ LoadImage(char* Filename, u32 MaxId)
     Result.Width = FreeImage_GetWidth(Bitmap);
     Result.Height = FreeImage_GetHeight(Bitmap);
     
+    // TODO(Zyonji): Clean this up.
+    HANDLE FileHandle = CreateFileA(ReplayFile, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if(FileHandle != INVALID_HANDLE_VALUE)
+    {
+        DWORD BytesRead = 0;
+        u32 MaxFileSize = sizeof(replay_header) +  10000000 * sizeof(pen_target);
+        ReadFile(FileHandle, OrcaState->ReplayHeader, MaxFileSize, &BytesRead, 0);
+        CloseHandle(FileHandle);
+        
+        OrcaState->ReplayCount = OrcaState->ReplayHeader->Count;
+        OrcaState->NextReplay = OrcaState->ReplayBuffer + OrcaState->ReplayCount;
+        // TODO(Zyonji): Transfer the BaseFile as well, in case it's a continuation of a previous paintover.
+    }
+    else
+    {
+        At = Filename;
+        To = OrcaState->ReplayHeader->BaseFile;
+        while(*At)
+        {
+            *To++ = *At++;
+        }
+        *To = 0;
+    }
     return(Result);
 }
 
@@ -722,13 +752,38 @@ SaveImage(image_data ImageData, u32 NewTime)
     Result = FreeImage_Save(FIF_PNG, Bitmap, FileName, PNG_Z_BEST_SPEED);
     FreeImage_Unload(Bitmap);
     
+    // TODO(Zyonji): Clean this up.
+    char *At = FileName;
+    for(; *At; ++At)
+    {
+        
+    }
+    *--At = 'x';
+    *--At = '6';
+    *--At = 'o';
+    
+    OrcaState->ReplayHeader->Version = 1;
+    OrcaState->ReplayHeader->Magic   = 0x6F3678;
+    OrcaState->ReplayHeader->Count   = OrcaState->ReplayCount;
+    
+    HANDLE FileHandle = CreateFileA(FileName, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,0);
+    if(FileHandle != INVALID_HANDLE_VALUE)
+    {
+        DWORD BytesWritten = 0;
+        u32 FileSize = sizeof(replay_header) + OrcaState->ReplayCount * sizeof(pen_target);
+        WriteFile(FileHandle, OrcaState->ReplayHeader, FileSize, &BytesWritten, 0);
+        CloseHandle(FileHandle);
+    }
+    
     return(Result);
 }
 
 internal void
 ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, v2u OutFrameSize)
 {
-    Canvas->MilliSeconds = ImageData.Minutes * 60000;
+    //Canvas->Seconds = ImageData.Minutes * 60;
+    Canvas->StartingTime = GetFileTime();
+    Canvas->SecondsIdle = -60 * ImageData.Minutes;
     Canvas->Size.Width = ImageData.Width;
     Canvas->Size.Height = ImageData.Height;
     ResetCanvasTransform(Canvas, OutFrameSize);
@@ -913,6 +968,7 @@ MapTabletInput(v2 TabletPoint, window_mapping Map)
 internal void
 ComputeTabletMapping(window_mapping *Map)
 {
+    // TODO(Zyonji): Should this be the lcSys coordinates instead of the monitor coordinates?
     HMONITOR Monitor;
     Monitor = MonitorFromWindow(Map->Window, MONITOR_DEFAULTTONEAREST);
     MONITORINFO MonitorInfo;
@@ -1038,7 +1094,9 @@ SAVE_EVERYTHING(SaveEverything)
                 OrcaState->MaxId = OrcaState->Image.Id + 1;
             }
             CreateBitmap(&OrcaState->OpenGL, &OrcaState->Image);
-            u32 NewTime = (u32)(OrcaState->Canvas.MilliSeconds / 60000);
+            //u32 NewTime = (u32)(OrcaState->Canvas.Seconds / 60);
+            u32 NewTime = (u32)(((GetFileTime() - OrcaState->Canvas.StartingTime) / 10000000
+                                 - OrcaState->Canvas.SecondsIdle) / 60);
             if(SaveImage(OrcaState->Image, NewTime))
             {
                 OrcaState->Image.Minutes = NewTime;
@@ -1096,6 +1154,7 @@ LoadCanvas(open_gl *OpenGL, image_data *Image, canvas_state *Canvas, char* FileN
 }
 LOAD_FILE(LoadFile)
 {
+    // TODO(Zyonji): Disable wintab and afterards reenable wintab.
     char FileName[MAX_PATH];
     RequestFileChoice(FileName, sizeof(FileName));
     if(*FileName)
@@ -1104,35 +1163,38 @@ LOAD_FILE(LoadFile)
     }
 }
 
+inline r32 
+Win32GetSecondsElapsed(LARGE_INTEGER Start, LARGE_INTEGER End)
+{
+    real32 Result = ((r32)(End.QuadPart - Start.QuadPart) /
+                     OrcaState->PerformanceFrequency);
+    return(Result);
+}
+
 PICK_COLOR(PickColor)
 {
     return(PickColor(&OrcaState->OpenGL, P, Size));
 }
 UPDATE_MENU(UpdateMenu)
 {
-    UpdateMenu(&OrcaState->OpenGL, Menu, Pen);
+    UpdateMenu(&OrcaState->OpenGL, Menu, Color, ColorMode);
 }
 RENDER_BRUSH_STROKE(RenderBrushStroke)
 {
-    RenderBrushStroke(&OrcaState->OpenGL, Canvas, OldP, NewP, OldV, NewV, OldColor, NewColor, OldAliasDistance, NewAliasDistance, ColorMode);
-}
-
-internal u64
-GetFileTime()
-{
-    u64 Result;
-    SYSTEMTIME SystemTime;
-    FILETIME FileTime;
-    GetSystemTime(&SystemTime);
-    SystemTimeToFileTime(&SystemTime, &FileTime);
-    Result = (((u64) FileTime.dwHighDateTime) << 32) | ((u64) FileTime.dwLowDateTime);
-    return(Result);
+    RenderBrushStroke(&OrcaState->OpenGL, Canvas, OldPen, NewPen);
 }
 
 LRESULT CALLBACK
 MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 {
     LRESULT Result = 0;
+    
+    if(Window != OrcaState->Map.Window)
+    {
+        if(Message == WM_DESTROY)
+            OrcaState->StreamWindow = 0;
+        return(DefWindowProc(Window, Message, WParam, LParam));
+    }
     
     switch(Message)
     {
@@ -1162,7 +1224,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
             if(OrcaState->OpenGL.Initialized)
             {
                 UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.ColorMode);
                 InvalidateRect(Window, 0, true);
             }
         }
@@ -1190,8 +1252,36 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
         {
             if(OrcaState->OpenGL.Initialized)
             {
-                u32 Minutes = (u32)(OrcaState->Canvas.MilliSeconds / 60000) - OrcaState->Image.Minutes;
-                DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, Minutes);
+                LARGE_INTEGER Counter;
+                QueryPerformanceCounter(&Counter);
+                s64 CurrentTime = Counter.QuadPart;
+                u32 TimeDifference = (u32)(1000 * (real32)(CurrentTime - OrcaState->LastFrameTime)
+                                           / OrcaState->PerformanceFrequency);
+                if(TimeDifference > 16)
+                {
+                    OrcaState->LastFrameTime = CurrentTime;
+                    
+                    //u32 Minutes = (OrcaState->Canvas.Seconds / 60) - OrcaState->Image.Minutes;
+                    u64 CurrentFileTime = GetFileTime();
+                    u64 LastTime = OrcaState->Canvas.StartingTime;
+                    u32 SecondsPassed = (u32)((CurrentFileTime - LastTime) / 10000000);
+                    u32 Minutes = (SecondsPassed - OrcaState->Canvas.SecondsIdle) / 60 - OrcaState->Image.Minutes;
+                    
+                    HDC WindowDC = GetDC(Window);
+                    wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
+                    DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, Minutes);
+                    ReleaseDC(Window, WindowDC);
+                    if(OrcaState->StreamWindow)
+                    {
+                        pen_target *PenHistory = OrcaState->NextReplay - Minimum(100, OrcaState->ReplayCount);
+                        pen_target *PenState = OrcaState->NextReplay - Minimum(1, OrcaState->ReplayCount);
+                        
+                        HDC StreamDC = GetDC(OrcaState->StreamWindow);
+                        wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
+                        DisplayStreamFrame(&OrcaState->OpenGL, *PenHistory, *PenState, OrcaState->Pen, OrcaState->Canvas);
+                        ReleaseDC(OrcaState->StreamWindow, StreamDC);
+                    }
+                }
             }
             ValidateRect(Window, 0);
         } break;
@@ -1239,13 +1329,34 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     InvalidateRect(Window, 0, true);
                 } break;
                 
+                case VK_F8:
+                {
+                    ReplayModeChange = true;
+                } break;
                 case VK_F11:
                 {
                     ToggleFullscreen(Window, &OrcaState->WindowData);
                 } break;
                 case VK_F12:
                 {
-                    ToggleFullscreen(Window, &OrcaState->WindowData, true);
+                    //ToggleFullscreen(Window, &OrcaState->WindowData, true);
+                    if(!OrcaState->StreamWindow)
+                    {
+                        OrcaState->StreamWindow = CreateWindowExA(
+                            0,
+                            "OrcaHexClass",
+                            "OrcaHexStream",
+                            WS_VISIBLE | WS_POPUP,
+                            0,
+                            0,
+                            1920,
+                            1080,
+                            0,
+                            0,
+                            0,
+                            0);
+                        SetPixelFormat(GetDC(OrcaState->StreamWindow));
+                    }
                 } break;
             }
         } break;
@@ -1256,48 +1367,72 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
             if(gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet)) 
             {
                 v2 TabletPoint = {(r32)Packet.pkX, (r32)Packet.pkY};
-                
-                pen_state OldPenState = OrcaState->Pen;
-                pen_state NewPenState = {};
-                NewPenState.P = MapTabletInput(TabletPoint, OrcaState->Map);
-                NewPenState.Color = OldPenState.Color;
-                NewPenState.ColorMode = OldPenState.ColorMode;
-                NewPenState.Width = OldPenState.NextWidth;
-                NewPenState.NextWidth = NewPenState.Width;
-                NewPenState.IsDown = Packet.pkNormalPressure;
-                NewPenState.Time = GetFileTime() / 10000;
-                NewPenState.Buttons = Packet.pkButtons;
-                if(OldPenState.Pressure > 0 || NewPenState.P.x + OrcaState->Menu.Origin.x > OrcaState->Menu.Size.Width || NewPenState.P.y + OrcaState->Menu.Origin.y > OrcaState->Menu.Size.Width)
-                {
-                    NewPenState.Pressure = (r32)Packet.pkNormalPressure / OrcaState->Map.PressureMax;
-                }
-                r32 HalfWidth = NewPenState.Width / 2;
+                v2 Point = MapTabletInput(TabletPoint, OrcaState->Map);
+                r32 Width = OrcaState->Pen.NextWidth;
                 r32 Radians = (Pi32 / 1800.0f) * (r32)Packet.pkOrientation.orAzimuth;
-                NewPenState.V.x = HalfWidth * sinf(Radians);
-                NewPenState.V.y = HalfWidth * cosf(Radians);
-                
-                b32 IsPenClose = (Packet.pkZ < 2 * OrcaState->Map.AxisMax.z / 3);
-                
-                if(OldPenState.Time + 5000 > NewPenState.Time)
+                if(OrcaState->Canvas.Mirrored)
+                    Radians = (2 * Pi32) - Radians;
+                r32 RightOfMenu = Point.x + OrcaState->Menu.Origin.x - OrcaState->Menu.Size.Width;
+                r32 TopOfMenu   = Point.y + OrcaState->Menu.Origin.y - OrcaState->Menu.Size.Height;
+                r32 Pressure = 0;
+                if(OrcaState->Pen.Pressure > 0 || RightOfMenu >= 0 || TopOfMenu >= 0)
                 {
-                    if(OldPenState.Time < NewPenState.Time)
-                    {
-                        OrcaState->Canvas.MilliSeconds += (NewPenState.Time - OldPenState.Time);
-                    }
-                    else if(OldPenState.Time > NewPenState.Time)
-                    {
-                        char Buffer[260];
-                        wsprintf(Buffer, "Time went from %02d to %02d", OldPenState.Time, NewPenState.Time);
-                        MessageBox(NULL, Buffer, "TimeRollover", MB_OK | MB_ICONHAND);
-                    }
+                    Pressure = (r32)Packet.pkNormalPressure / OrcaState->Map.PressureMax;
                 }
+                v4 Color = OrcaState->Pen.Color;
+                u32 ColorMode = OrcaState->Pen.ColorMode;
                 
-                if(ProcessBrushMove(OrcaState, OrcaState->Pen, NewPenState, IsPenClose))
+                u32 Seconds = SecondsPassed(&OrcaState->LastPenTime);
+                if(Seconds > 5)
+                {
+                    OrcaState->Canvas.SecondsIdle += Seconds;
+                }
+#if 0
+                //if(Seconds != 0)
+                {
+                    char Buffer[256];
+                    wsprintf(Buffer, "Time: %u\n", Packet.pkTime);
+                    OutputDebugStringA(Buffer);
+                }
+#endif
+                // TODO(Zyonji): Considder making it possible to change the width. Maybe with Packet.pkOrientation.orAltitude
+                pen_target PenTarget = {};
+                PenTarget.P          = MapFrameToCanvas(Point, OrcaState->Canvas);
+                PenTarget.Pressure   = Pressure;
+                // TODO(Zyonji): Gotta mirror it when mirrored
+                PenTarget.Radians    = Radians;
+                PenTarget.Width      = Width;
+                PenTarget.Color      = Color;
+                PenTarget.ColorMode  = ColorMode;
+                
+                u32 Buttons = Packet.pkButtons;
+                b32 IsPenClose = (Packet.pkZ < 2 * OrcaState->Map.AxisMax.z / 3);
+                b32 FreshClick = (!OrcaState->Pen.IsDown && Packet.pkNormalPressure);
+                OrcaState->Pen.IsDown = Packet.pkNormalPressure;
+                
+                //if(ProcessBrushMove(OrcaState, OrcaState->Pen_, NewPenState, IsPenClose))
+                if(ProcessBrushMove(OrcaState, PenTarget, Point, Buttons, IsPenClose, FreshClick, true))
                 {
                     InvalidateRect(Window, 0, true);
                 }
+                OrcaState->Pen.Buttons = Buttons;
+                OrcaState->Pen.Point = Point;
             }
         } break;
+        
+        case WT_PACKETEXT:
+		{
+			PACKETEXT Packet = {};
+			if (gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet))
+			{
+                // TODO(Zyonji): Figure out how to detect the 0 position package when lifting the finger.
+                if(Packet.pkTouchRing.nPosition)
+                {
+                    SetRelativeBrushSize(&OrcaState->Pen, (r32)Packet.pkTouchRing.nPosition / OrcaState->Map.TouchRingMax);
+                }
+            }
+		}
+		break;
         
         default:
         {
@@ -1311,6 +1446,10 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 int CALLBACK
 WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowCode)
 {
+    UINT DesiredSchedulerMS = 1;
+    b32 SleepIsGranular = (timeBeginPeriod(DesiredSchedulerMS) == TIMERR_NOERROR);
+    ReplayModeChange = false;
+    
     WNDCLASS WindowClass = {};
     
     WindowClass.lpfnWndProc = MainWindowCallback;
@@ -1321,7 +1460,8 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
     
     if(RegisterClassA(&WindowClass))
     {
-        umm GeneralMemory = (umm)VirtualAlloc(0, sizeof(orca_state), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+        memory_index MemorySize = sizeof(win32_orca_state) + sizeof(replay_header) +  10000000 * sizeof(pen_target);
+        umm GeneralMemory = (umm)VirtualAlloc(0, MemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
         if(GeneralMemory)
         {
             OrcaState = (win32_orca_state *)GeneralMemory;
@@ -1331,6 +1471,10 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState->SaveEverything = CPUSaveEverything;
             OrcaState->LoadFile = LoadFile;
             OrcaState->RenderBrushStroke = CPURenderBrushStroke;
+            
+            OrcaState->ReplayHeader = (replay_header *)((uint8 *)GeneralMemory + sizeof(win32_orca_state));
+            OrcaState->ReplayBuffer = (pen_target *)((uint8 *)OrcaState->ReplayHeader + sizeof(replay_header));
+            OrcaState->NextReplay = OrcaState->ReplayBuffer;
             
             char *Path = OrcaState->IniPath;
             {
@@ -1402,7 +1546,11 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);
                         UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
-                        UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                        UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.ColorMode);
+                        
+                        LARGE_INTEGER PerfCountFrequencyResult;
+                        QueryPerformanceFrequency(&PerfCountFrequencyResult);
+                        OrcaState->PerformanceFrequency = (r32)PerfCountFrequencyResult.QuadPart;
                         
                         if(InitialState.WindowStyle & WS_POPUP)
                         {
@@ -1416,14 +1564,111 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         }
                         
                         // NOTE(Zyonji): The main Message loop.
+                        b32 Alive = true;
                         for(;;)
                         {
                             MSG Message;
                             BOOL MessageResult = GetMessageA(&Message, 0, 0, 0);
-                            if(MessageResult > 0)
+                            if(MessageResult > 0 && Alive)
                             {
                                 TranslateMessage(&Message);
                                 DispatchMessageA(&Message);
+                                
+                                if(ReplayModeChange)
+                                {
+                                    ReplayModeChange = false;
+                                    
+                                    OrcaState->NextReplay = OrcaState->ReplayBuffer;
+                                    u32 ReplayCount = OrcaState->ReplayCount;
+                                    OrcaState->ReplayCount = 0;
+                                    u32 Count = 0;
+                                    
+                                    ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
+                                    if(*OrcaState->ReplayHeader->BaseFile)
+                                    {
+                                        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->Display.Size, OrcaState->MaxId);
+                                    }
+                                    else
+                                    {
+                                        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size);
+                                    }
+                                    
+                                    r32 SecondsElapsed;
+                                    r32 TargetSecondsPerFrame = 1.0f / 60.0f;
+                                    LARGE_INTEGER FrameStart;
+                                    LARGE_INTEGER CurrentCounter;
+                                    QueryPerformanceCounter(&FrameStart);
+                                    
+                                    
+                                    while(OrcaState->ReplayCount < ReplayCount && Alive)
+                                    {
+                                        *OrcaState->NextReplay++;
+                                        OrcaState->ReplayCount++;
+                                        Count++;
+                                        
+                                        ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
+                                        
+                                        if(Count >= 20)
+                                        {
+                                            while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
+                                            {
+                                                if(Message.message == WM_QUIT)
+                                                {
+                                                    Alive = false;
+                                                }
+                                                TranslateMessage(&Message);
+                                                DispatchMessageA(&Message);
+                                            }
+                                            
+                                            QueryPerformanceCounter(&CurrentCounter);
+                                            SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
+                                            
+                                            if(SecondsElapsed < TargetSecondsPerFrame)
+                                            {                        
+                                                if(SleepIsGranular)
+                                                {
+                                                    DWORD SleepMS = (DWORD)(1000.0f * (TargetSecondsPerFrame -
+                                                                                       SecondsElapsed));
+                                                    if(SleepMS > 0)
+                                                    {
+                                                        Sleep(SleepMS);
+                                                    }
+                                                }
+                                                
+                                                while(SecondsElapsed < TargetSecondsPerFrame)
+                                                {                            
+                                                    QueryPerformanceCounter(&CurrentCounter);
+                                                    SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
+                                                }
+                                            }
+                                            
+                                            QueryPerformanceCounter(&FrameStart);
+                                            
+                                            HDC WindowDC = GetDC(Window);
+                                            wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
+                                            DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
+                                            ReleaseDC(Window, WindowDC);
+                                            if(OrcaState->StreamWindow)
+                                            {
+                                                pen_target *PenHistory = OrcaState->NextReplay - Minimum(100, OrcaState->ReplayCount);
+                                                pen_target *PenState = 
+                                                    OrcaState->NextReplay + Minimum(100, ReplayCount - OrcaState->ReplayCount);
+                                                
+                                                HDC StreamDC = GetDC(OrcaState->StreamWindow);
+                                                wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
+                                                DisplayStreamFrame(&OrcaState->OpenGL, *PenHistory, *PenState, 
+                                                                   *OrcaState->NextReplay, OrcaState->Canvas);
+                                                ReleaseDC(OrcaState->StreamWindow, StreamDC);
+                                            }
+                                            
+                                            Count = 0;
+                                        }
+                                    }
+                                    HDC WindowDC = GetDC(Window);
+                                    wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
+                                    RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
+                                    ReleaseDC(Window, WindowDC);
+                                }
                             }
                             else
                             {

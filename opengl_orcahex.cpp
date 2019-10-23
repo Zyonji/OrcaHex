@@ -35,6 +35,7 @@ struct frame_buffer
 struct open_gl
 {
     b32 Initialized;
+    HGLRC RenderingContext;
     
     render_program_base VisualTransparency;
     render_program_base TransferPixelsProgram;
@@ -448,9 +449,9 @@ vec2 Normal2 = vec2(-Normal.y, Normal.x);
 float V = dot(RelPos, Normal2);
 
 vec4 CursorColor = vec4(1, 1, 1, 2) - step(0.5, FragmentColor);
-float Strength = (1.5 - abs(V)) * abs(U) / HalfWidth;
-if((floor(gl_FragCoord.xy) == Cursor) || Strength > 1) Strength = 1;
-if((floor(gl_FragCoord.xy) == Cursor) || (abs(U) <= HalfWidth && abs(V) <= 1.5)) FragmentColor = mix(FragmentColor, CursorColor, Strength);
+float Strength = max((1.5 - abs(V)) * abs(U) / HalfWidth, (1.5 - abs(V)) * (1.5 - abs(U)));
+if(Strength > 1) Strength = 1;
+if((floor(gl_FragCoord.xy) == Cursor) || (abs(U) <= max(HalfWidth, 1.5) && abs(V) <= 1.5)) FragmentColor = mix(FragmentColor, CursorColor, Strength);
 }
 )glsl";
     
@@ -704,9 +705,8 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
 }
 
 internal void
-UpdateMenu(open_gl *OpenGL, menu_state *Menu, pen_state Pen)
+UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 ColorMode)
 {
-    v4 Color = Pen.Color;
     glEnable(GL_BLEND);
     
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->MenuFramebuffer.FramebufferHandle);
@@ -714,7 +714,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, pen_state Pen)
     glViewport(0, 0, Menu->Size.Width, Menu->Size.Height);
     
     r32 PressureMode = 0;
-    if(Pen.ColorMode & COLOR_MODE_PRESSURE)
+    if(ColorMode & COLOR_MODE_PRESSURE)
     {
         PressureMode = 1;
     }
@@ -726,7 +726,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, pen_state Pen)
     glClear(GL_COLOR_BUFFER_BIT);
     
     r32 AlphaMode = 0;
-    if(Pen.ColorMode & COLOR_MODE_ALPHA)
+    if(ColorMode & COLOR_MODE_ALPHA)
     {
         AlphaMode = 1;
     }
@@ -734,7 +734,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, pen_state Pen)
     glScissor(Menu->AlphaButton.x, Menu->AlphaButton.y, Menu->AlphaButton.Height, Menu->AlphaButton.Width);
     glClear(GL_COLOR_BUFFER_BIT);
     r32 LuminaceMode = 0;
-    if(Pen.ColorMode & COLOR_MODE_LUMINANCE)
+    if(ColorMode & COLOR_MODE_LUMINANCE)
     {
         LuminaceMode = 1;
     }
@@ -742,7 +742,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, pen_state Pen)
     glScissor(Menu->LButton.x, Menu->LButton.y, Menu->LButton.Height, Menu->LButton.Width);
     glClear(GL_COLOR_BUFFER_BIT);
     r32 ChromaMode = 0;
-    if(Pen.ColorMode & COLOR_MODE_CHROMA)
+    if(ColorMode & COLOR_MODE_CHROMA)
     {
         ChromaMode = 1;
     }
@@ -1327,6 +1327,80 @@ DrawToggleRight(open_gl *OpenGL, u32area Area, u32 Gap)
 }
 
 internal void
+RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_target NewPen)
+{
+    u32 ColorMode = NewPen.ColorMode;
+    v2 OldP = OldPen.P;
+    v2 NewP = NewPen.P;
+    v2 OldV = {sinf(OldPen.Radians), cosf(OldPen.Radians)};
+    OldV *= (0.5f * OldPen.Width);
+    v2 NewV = {sinf(NewPen.Radians), cosf(NewPen.Radians)};
+    NewV *= (0.5f * NewPen.Width);
+    v4 OldColor = OldPen.Color;
+    v4 NewColor = NewPen.Color;
+    if(ColorMode & COLOR_MODE_PRESSURE)
+    {
+        OldColor.a *= OldPen.Pressure;
+        NewColor.a *= NewPen.Pressure;
+    }
+    else
+    {
+        OldColor.a = OldPen.Pressure;
+        NewColor.a = NewPen.Pressure;
+    }
+    v2 Normal = Normalize(Perp(NewP - OldP));
+    r32 OldAliasDistance = fabsf(Inner(OldV, Normal));
+    r32 NewAliasDistance = fabsf(Inner(NewV, Normal));
+    
+    common_vertex Vertices[] =
+    {
+        {{NewP.x+NewV.x, NewP.y+NewV.y, 0, 1}, { 1, NewAliasDistance}, NewColor},
+        {{OldP.x+OldV.x, OldP.y+OldV.y, 0, 1}, { 1, OldAliasDistance}, OldColor},
+        {{NewP.x-NewV.x, NewP.y-NewV.y, 0, 1}, {-1, NewAliasDistance}, NewColor},
+        {{OldP.x-OldV.x, OldP.y-OldV.y, 0, 1}, {-1, OldAliasDistance}, OldColor},
+    };
+    
+    m4x4 Transform = {
+        (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
+        0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    // TODO(Zyonji): Figure out how to implement the different alpha modes. Probably through the Transferprogram
+    v4 BrushMode = {};
+    if(ColorMode & COLOR_MODE_LUMINANCE)
+    {
+        BrushMode.x = 1;
+    }
+    if(ColorMode & COLOR_MODE_CHROMA)
+    {
+        BrushMode.y = 1;
+    }
+    if(ColorMode & COLOR_MODE_ALPHA)
+    {
+        BrushMode.z = 1;
+    }
+    
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
+    glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+    glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+    
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+    
+    OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+    OpenGLProgramEnd(&OpenGL->BrushModeProgram);
+    
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
+    OpenGLProgramBegin(&OpenGL->StaticTransferPixelsProgram, Transform);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->SwapFramebuffer.ColorHandle);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+    glBindTexture(GL_TEXTURE_2D, 0);
+    OpenGLProgramEnd(&OpenGL->StaticTransferPixelsProgram);
+}
+#if 0
+internal void
 RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, v2 OldP, v2 NewP, v2 OldV, v2 NewV, v4 OldColor, v4 NewColor, r32 OldAliasDistance, r32 NewAliasDistance, u32 ColorMode)
 {
     common_vertex Vertices[] =
@@ -1376,6 +1450,7 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, v2 OldP, v2 NewP, v2 Old
     glBindTexture(GL_TEXTURE_2D, 0);
     OpenGLProgramEnd(&OpenGL->StaticTransferPixelsProgram);
 }
+#endif
 
 internal void
 DrawTimer(u32area Area, v4 Color)
@@ -1450,16 +1525,25 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
         0, 1, 0, 0, 
         0, 0, 1, 0, 
         0, 0, 0, 1,};
-    v2s Cursor = {(s32)PenState.P.x + (s32)DisplayState.Size.Width / 2, (s32)PenState.P.y + (s32)DisplayState.Size.Height / 2};
-    r32 HalfWidth = Length(PenState.V);
-    r32 NormalizeC = 1 / HalfWidth;
-    v2 Normal = NormalizeC * PenState.V;
+    v2s Cursor = {(s32)PenState.Point.x + (s32)DisplayState.Size.Width / 2, (s32)PenState.Point.y + (s32)DisplayState.Size.Height / 2};
+    r32 HalfWidth = 0.5f * PenState.Width;
+    v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
+    if(Canvas.Mirrored)
+        Normal.x = -Normal.x;
+    
     OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, Canvas.Scale * HalfWidth, Normal);
     glBindTexture(GL_TEXTURE_2D, OpenGL->DisplayFramebuffer.ColorHandle);
     glGenerateMipmap(GL_TEXTURE_2D);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindTexture(GL_TEXTURE_2D, 0);
     OpenGLProgramEnd(&OpenGL->DisplayProgram);
+    
+#if 0
+    glViewport(Cursor.x, Cursor.y, 10, 10);
+    glScissor(Cursor.x, Cursor.y, 10, 10);
+    glClearColor(0, 0, 0, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+#endif
     
     u32area Area = Menu.Time;
     v4 Color;
@@ -1504,5 +1588,167 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
     }
     DrawTimer(Area, Color);
     // TODO(Zyonji): Should I save the device context or should that be part of display buffer?
+    SwapBuffers(wglGetCurrentDC());
+}
+
+internal r32
+LimitStreamDeltaMin(r32 NewDelta, r32 OldDelta)
+{
+    r32 Result;
+    if(OldDelta < 0)
+    {
+        if(NewDelta < OldDelta)
+            Result = Maximum(1.1f * OldDelta - 2, 0.1f * NewDelta);
+        else
+            Result = Minimum(0.9f * OldDelta + 2, 0.1f * NewDelta);
+    }
+    else
+    {
+        if(NewDelta > OldDelta)
+            Result = Minimum(1.01f * OldDelta + 2, 0.01f * NewDelta);
+        else
+            Result = Maximum(0.9f * OldDelta - 2, 0.1f * NewDelta);
+    }
+    return(Result);
+}
+internal r32
+LimitStreamDeltaMax(r32 NewDelta, r32 OldDelta)
+{
+    r32 Result;
+    if(OldDelta < 0)
+    {
+        if(NewDelta < OldDelta)
+            Result = Maximum(1.01f * OldDelta - 2, 0.01f * NewDelta);
+        else
+            Result = Minimum(0.9f * OldDelta + 2, 0.1f * NewDelta);
+    }
+    else
+    {
+        if(NewDelta > OldDelta)
+            Result = Minimum(1.1f * OldDelta + 2, 0.1f * NewDelta);
+        else
+            Result = Maximum(0.9f * OldDelta - 2, 0.1f * NewDelta);
+    }
+    return(Result);
+}
+
+internal void
+DisplayStreamFrame(open_gl *OpenGL, pen_target PenHistory, pen_target PenState, pen_target PenTarget, canvas_state Canvas)
+{
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, 1920, 1080);
+    glScissor(0, 0, 1920, 1080);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+    glClearColor(0.8, 0.8, 0.8, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    m4x4 Transform;
+    
+    // NOTE(Zyonji): Rendering the canvas.
+    if(Canvas.Size.Height && Canvas.Size.Width)
+    {
+        u32 Width = 1080 * Canvas.Size.Width / Canvas.Size.Height;
+        
+        glViewport(0, 0, Width, 1080);
+        glScissor(0, 0, Width, 1080);
+        Transform = {
+            1, 0, 0, 0, 
+            0, 1, 0, 0, 
+            0, 0, 1, 0, 
+            0, 0, 0, 1,};
+        // TODO(Zyonji): Fix this position.
+        v2s Cursor = {
+            (s32)((PenTarget.P.x / Canvas.Size.Width  + 0.5f) * Width), 
+            (s32)((PenTarget.P.y / Canvas.Size.Height + 0.5f) * 1080)
+        };
+        r32 HalfWidth = 0.5f * PenState.Width;
+        v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
+        
+        OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, Canvas.Scale * HalfWidth, Normal);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->DisplayProgram);
+        
+        local_persist r32 MinXt = -1;
+        local_persist r32 MaxXt =  1;
+        local_persist r32 MinYt = -1;
+        local_persist r32 MaxYt =  1;
+        
+        local_persist r32 MinXp = -1;
+        local_persist r32 MaxXp =  1;
+        local_persist r32 MinYp = -1;
+        local_persist r32 MaxYp =  1;
+        
+        local_persist r32 MinXd =  0;
+        local_persist r32 MaxXd =  0;
+        local_persist r32 MinYd =  0;
+        local_persist r32 MaxYd =  0;
+        
+        Width = 1920 - Width;
+        r32 MinX = 
+            Maximum(Minimum(Minimum(
+            PenHistory.P.x - PenHistory.Width, 
+            PenState.P.x - PenState.Width), 
+                            PenTarget.P.x - PenTarget.Width),  
+                    -0.5f * Canvas.Size.Width);
+        r32 MaxX = 
+            Minimum(Maximum(Maximum(
+            PenHistory.P.x + PenHistory.Width, 
+            PenState.P.x + PenState.Width), 
+                            PenTarget.P.x + PenTarget.Width),  
+                    0.5f * Canvas.Size.Width); 
+        r32 MinY =
+            Maximum(Minimum(Minimum(
+            PenHistory.P.y - PenHistory.Width, 
+            PenState.P.y - PenState.Width), 
+                            PenTarget.P.y - PenTarget.Width),  
+                    -0.5f * Canvas.Size.Height);
+        r32 MaxY = 
+            Minimum(Maximum(Maximum(
+            PenHistory.P.y + PenHistory.Width, 
+            PenState.P.y + PenState.Width), 
+                            PenTarget.P.y + PenTarget.Width),  
+                    0.5f * Canvas.Size.Height);
+        
+        if(MinX < MinXt || MinX - 200 > 0.5f * MinXt + 0.5f * MaxXt)
+            MinXt = MinX - 200;
+        if(MaxX > MaxXt || MaxX + 200 < 0.5f * MaxXt + 0.5f * MinXt)
+            MaxXt = MaxX + 200;
+        if(MinY < MinYt || MinY - 200 > 0.5f * MinYt + 0.5f * MaxYt)
+            MinYt = MinY - 200;
+        if(MaxY > MaxYt || MaxY + 200 < 0.5f * MaxYt + 0.5f * MinYt)
+            MaxYt = MaxY + 200;
+        
+        MinXd = LimitStreamDeltaMin(MinXt - MinXp, MinXd);
+        MaxXd = LimitStreamDeltaMax(MaxXt - MaxXp, MaxXd);
+        MinYd = LimitStreamDeltaMin(MinYt - MinYp, MinYd);
+        MaxYd = LimitStreamDeltaMax(MaxYt - MaxYp, MaxYd);
+        
+        MinXp += MinXd;
+        MaxXp += MaxXd;
+        MinYp += MinYd;
+        MaxYp += MaxYd;
+        
+        v2 Scale = {1080.0f * (r32)Canvas.Size.Width / (r32)Width, (r32)Canvas.Size.Height};
+        r32 Zoom =  1.0f / Maximum(MaxXp - MinXp, MaxYp - MinYp);
+        Scale *= Zoom;
+        
+        glViewport(1920 - Width, 0, Width, 1080);
+        glScissor(1920 - Width, 0, Width, 1080);
+        Transform = {
+            Scale.x, 0, 0, -(MinXp + MaxXp) * Zoom * 1080.0f / (r32)Width,
+            0, Scale.y, 0, -(MinYp + MaxYp) * Zoom,
+            0, 0, 1, 0, 
+            0, 0, 0, 1,};
+        OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
+    }
+    
     SwapBuffers(wglGetCurrentDC());
 }

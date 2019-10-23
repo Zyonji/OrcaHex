@@ -78,7 +78,6 @@ SquareRoot(f32 Real32)
     return(Result);
 }
 
-
 union v2
 {
     struct

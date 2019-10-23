@@ -39,20 +39,25 @@ struct menu_state
     u32area LButton;
     u32area abButton;
 };
-struct pen_state
+struct pen_base
 {
-    r32 Pressure;
-    r32 AliasDistance;
-    r32 Width;
-    r32 NextWidth;
     v2 P;
-    v2 V;
-    v2 Vector;
+    r32 Pressure;
+    r32 Radians;
+    r32 Width;
+};
+struct pen_target : pen_base
+{
     v4 Color;
     u32 ColorMode;
-    b32 IsDown;
-    u64 Time;
+};
+struct pen_state : pen_target
+{
+    pen_base Delta;
+    v2 Point;
+    r32 NextWidth;
     u32 Buttons;
+    b32 IsDown;
 };
 struct canvas_state
 {
@@ -63,11 +68,12 @@ struct canvas_state
     v2 Center;
     b32 Mirrored;
     b32 Hot;
-    u64 MilliSeconds;
+    u64 StartingTime;
+    s32 SecondsIdle;
 };
 #define PICK_COLOR(name) v4 name(v2 P, v2u Size)
 typedef PICK_COLOR(pick_color);
-#define UPDATE_MENU(name) void name(menu_state *Menu, pen_state Pen)
+#define UPDATE_MENU(name) void name(menu_state *Menu, v4 Color, u32 ColorMode)
 typedef UPDATE_MENU(update_menu);
 #define CREATE_NEW_FILE(name) void name(u32 MaxId, v2u DisplaySize)
 typedef CREATE_NEW_FILE(create_new_file);
@@ -75,7 +81,8 @@ typedef CREATE_NEW_FILE(create_new_file);
 typedef SAVE_EVERYTHING(save_everything);
 #define LOAD_FILE(name) void name(canvas_state *Canvas, v2u DisplaySize, u32 MaxId)
 typedef LOAD_FILE(load_file);
-#define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, v2 OldP, v2 NewP, v2 OldV, v2 NewV, v4 OldColor, v4 NewColor, r32 OldAliasDistance, r32 NewAliasDistance, u32 ColorMode)
+#define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
+//#define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, v2 OldP, v2 NewP, v2 OldV, v2 NewV, v4 OldColor, v4 NewColor, r32 OldAliasDistance, r32 NewAliasDistance, u32 ColorMode)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
 struct orca_state
 {
@@ -84,6 +91,10 @@ struct orca_state
     pen_state Pen;
     canvas_state Canvas;
     u32 MaxId;
+    
+    pen_target *ReplayBuffer;
+    pen_target *NextReplay;
+    u32 ReplayCount;
     
     pick_color *PickColor;
     update_menu *UpdateMenu;
@@ -351,18 +362,39 @@ ChangeBrushSize(pen_state *Pen, r32 Factor)
         Pen->NextWidth = 0.5;
     }
 }
+#define BRUSH_STEP_FACTOR          4.0f
+internal void
+SetRelativeBrushSize(pen_state *Pen, r32 Factor)
+{
+    r32 Step = (r32)pow(BRUSH_STEP_FACTOR, 0.5f);
+    r32 Margin = (r32)pow(BRUSH_STEP_FACTOR, 0.25f);
+    r32 Midpoint = 1;
+    r32 OldWidth = Pen->NextWidth;
+    r32 Offset = 0;
+    
+    while(OldWidth > Midpoint * Step * Margin)
+    {
+        Midpoint *= BRUSH_STEP_FACTOR;
+        Offset += 1;
+    }
+    
+    if(OldWidth > Midpoint * Margin && Factor < 0.5f)
+        Offset += 1;
+    
+    Pen->NextWidth = (r32)pow(BRUSH_STEP_FACTOR, Factor + Offset - 0.5f);
+}
 
 internal b32 // NOTE(Zyonji): true if the the frame needs to be updated.
-ProcessBrushMove(orca_state *OrcaState, pen_state OldPenState, pen_state NewPenState, b32 IsPenClose)
+ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 Buttons, b32 IsPenClose, b32 FreshClick, b32 RecordReplay)
 {
-    b32 Result = false;
+    pen_state *PenState = &OrcaState->Pen;
     
-    if(NewPenState.P.y + OrcaState->Menu.Origin.y <= OrcaState->Menu.Size.Height && NewPenState.P.x + OrcaState->Menu.Origin.x <= OrcaState->Menu.Size.Width  && OldPenState.Pressure == 0)
+    if(Point.y + OrcaState->Menu.Origin.y <= OrcaState->Menu.Size.Height && Point.x + OrcaState->Menu.Origin.x <= OrcaState->Menu.Size.Width  && PenState->Pressure == 0)
     {
         menu_state Menu = OrcaState->Menu;
-        v2 P = {NewPenState.P.x + OrcaState->Menu.Origin.x, NewPenState.P.y + OrcaState->Menu.Origin.y};
+        v2 P = {Point.x + OrcaState->Menu.Origin.x, Point.y + OrcaState->Menu.Origin.y};
         
-        if((0x2 & NewPenState.Buttons) && !(0x2 & OldPenState.Buttons))
+        if((0x2 & Buttons) && !(0x2 & PenState->Buttons))
         {
             if(P.x >= Menu.Alpha.x + (Menu.Steps - 1) * Menu.Offset.x && P.x < Menu.Alpha.x + Menu.Alpha.Width&& P.y >= Menu.Alpha.y && P.y < Menu.Alpha.y + Menu.Alpha.Height + (Menu.Steps - 1) * Menu.Offset.y)
             {
@@ -372,17 +404,16 @@ ProcessBrushMove(orca_state *OrcaState, pen_state OldPenState, pen_state NewPenS
                 {
                     Distance = Temp;
                 }
-                NewPenState.Color.a = 1.0f - (r32)((u32)Distance / Menu.Alpha.Height) / (Menu.Steps - 1);
+                PenTarget.Color.a = 1.0f - (r32)((u32)Distance / Menu.Alpha.Height) / (Menu.Steps - 1);
             }
             else
             {
-                NewPenState.Color = OrcaState->PickColor(NewPenState.P, OrcaState->Display.Size);
+                PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
             }
-            OrcaState->UpdateMenu(&OrcaState->Menu, NewPenState);
+            OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
         }
-        OrcaState->Pen = NewPenState;
         
-        if(!OldPenState.IsDown && NewPenState.IsDown)
+        if(FreshClick)
         {
             if(Inside(Menu.New, P))
             {
@@ -435,107 +466,130 @@ ProcessBrushMove(orca_state *OrcaState, pen_state OldPenState, pen_state NewPenS
             }
             else if(Inside(Menu.ColorA, P))
             {
-                OrcaState->Pen.ColorMode |= COLOR_MODE_PRESSURE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                PenTarget.ColorMode |= COLOR_MODE_PRESSURE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
             else if(Inside(Menu.ColorB, P))
             {
-                OrcaState->Pen.ColorMode &= ~COLOR_MODE_PRESSURE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                PenTarget.ColorMode &= ~COLOR_MODE_PRESSURE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
             else if(Inside(Menu.AlphaButton, P))
             {
-                OrcaState->Pen.ColorMode ^= COLOR_MODE_ALPHA;
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                PenTarget.ColorMode ^= COLOR_MODE_ALPHA;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
             else if(Inside(Menu.LButton, P))
             {
-                OrcaState->Pen.ColorMode ^= COLOR_MODE_LUMINANCE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                PenTarget.ColorMode ^= COLOR_MODE_LUMINANCE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
             else if(Inside(Menu.abButton, P))
             {
-                OrcaState->Pen.ColorMode ^= COLOR_MODE_CHROMA;
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen);
+                PenTarget.ColorMode ^= COLOR_MODE_CHROMA;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
         }
-        Result = true;
     }
     else
     {
-        NewPenState.Vector = OldPenState.P - NewPenState.P;
-        r32 Distance = Length(NewPenState.Vector);
-        // TODO(Zyonji): Make sure the stroke doesn't cross up with itself by having the for corners of the stroke render make an hourglass shape.
-        if(Distance >= 1.0f)
+        v2 DeltaP = PenTarget.P - PenState->P;
+        r32 CanvasEdgeX = (r32)OrcaState->Canvas.Size.Width / 2.0f;
+        r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
+        if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
         {
-            // TODO(Zyonji): Considder making it possible to change the width. Maybe with Packet.pkOrientation.orAltitude
-            v2 Perpendicular = Perp(NewPenState.Vector);
-            v2 Normal = (1.0f / Distance) * Perpendicular;
-            
-            r32 CanvasEdgeX = (r32)OrcaState->Canvas.Size.Width / 2.0f;
-            r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
-            v2 P = MapFrameToCanvas(NewPenState.P, OrcaState->Canvas);
-            if(P.x > -CanvasEdgeX && P.x < CanvasEdgeX && P.y > -CanvasEdgeY && P.y < CanvasEdgeY && IsPenClose) 
+            if(0x2 & Buttons)
             {
-                if(0x2 & NewPenState.Buttons)
-                {
-                    NewPenState.Color = OrcaState->PickColor(NewPenState.P, OrcaState->Display.Size);
-                    OrcaState->UpdateMenu(&OrcaState->Menu, NewPenState);
-                }
-                if(0x4 & NewPenState.Buttons)
-                {
-                    OrcaState->Canvas.Center -= NewPenState.Vector;
-                }
+                PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
             }
-            r32 Scalar = Inner(NewPenState.V, Normal);
-            NewPenState.AliasDistance = fabsf(Scalar);
-            
-            if((NewPenState.Pressure > 0 || OldPenState.Pressure > 0) && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width && !(0x4 & NewPenState.Buttons))
+            if(0x4 & Buttons)
             {
-                v2 OldP = MapFrameToCanvas(OldPenState.P, OrcaState->Canvas);
-                v2 OldV = {Inner(OrcaState->Canvas.XMap, OldPenState.V), Inner(OrcaState->Canvas.YMap, OldPenState.V)};
-                
-                v2 NewP = MapFrameToCanvas(NewPenState.P, OrcaState->Canvas);
-                v2 NewV = {Inner(OrcaState->Canvas.XMap, NewPenState.V), Inner(OrcaState->Canvas.YMap, NewPenState.V)};
-                
-                v4 NewColor = NewPenState.Color;
-                v4 OldColor = OldPenState.Color;
-                if(NewPenState.ColorMode & COLOR_MODE_PRESSURE)
-                {
-                    NewColor.a *= NewPenState.Pressure;
-                    OldColor.a *= OldPenState.Pressure;
-                }
-                else
-                {
-                    NewColor.a = NewPenState.Pressure;
-                    OldColor.a = OldPenState.Pressure;
-                }
-                
-                OrcaState->RenderBrushStroke(OrcaState->Canvas, OldP, NewP, OldV, NewV, OldColor, NewColor, OldPenState.AliasDistance, NewPenState.AliasDistance, NewPenState.ColorMode);
-                // TODO(Zyonji): This seems to not anti alias the edges correctly.  When the canvas is mirrored, the edges seem to become aliased.
-                if(Inner(NewPenState.Vector, Perp(OldPenState.V)) * Inner(OldPenState.Vector, Perp(OldPenState.V)) < 0)
-                {
-                    v2 Offset = Normalize(Perp(OldV));
-                    if(Inner(Offset, OldP - NewP) < 0)
-                    {
-                        Offset = -Offset;
-                    }
-                    v2 OffP = OldP + Offset;
-                    v4 OffColor = OldColor;
-                    OldColor.a *= 2;
-                    if(OldColor.a > 1)
-                    {
-                        OldColor.a = 1;
-                    }
-                    OffColor.a = 0;
-                    
-                    OrcaState->RenderBrushStroke(OrcaState->Canvas, OldP, OffP, OldV, OldV, OldColor, OffColor, OldPenState.AliasDistance, OldPenState.AliasDistance, OldPenState.ColorMode);
-                }
-                OrcaState->Canvas.Hot = true;
+                OrcaState->Canvas.Center += Point - PenState->Point;
             }
-            OrcaState->Pen = NewPenState;
-            Result = true;
+        }
+        
+        // TODO(Zyonji): Make sure the stroke doesn't cross up with itself by having the for corners of the stroke render make an hourglass shape.
+        if((PenTarget.Pressure > 0 || PenState->Pressure > 0) && !(0x4 & Buttons) && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width)
+        {
+            if(OrcaState->ReplayCount < 10000000 && RecordReplay)
+            {
+                if(PenState->Pressure <= 0)
+                {
+                    *OrcaState->NextReplay = *PenState;
+                    OrcaState->NextReplay++;
+                    OrcaState->ReplayCount++;
+                }
+                *OrcaState->NextReplay = PenTarget;
+                OrcaState->NextReplay++;
+                OrcaState->ReplayCount++;
+            }
+            
+            //PenTarget.Radians = PenState->Radians;
+            
+            // TODO(Zyonji): Smooth things out and allow active turning.
+            v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
+            r32 MaximumRadiansDelta = fabsf(Inner(Normal, DeltaP)) / Maximum(OrcaState->Pen.Width, PenTarget.Width);
+            r32 RadiansDelta = PenTarget.Radians - PenState->Radians;
+            if(RadiansDelta > Pi32)
+            {
+                RadiansDelta -= 2 * Pi32;
+            }
+            else if(RadiansDelta < -Pi32)
+            {
+                RadiansDelta += 2 * Pi32;
+            }
+            
+            if( RadiansDelta < -MaximumRadiansDelta)
+                RadiansDelta = -MaximumRadiansDelta;
+            if( RadiansDelta >  MaximumRadiansDelta)
+                RadiansDelta =  MaximumRadiansDelta;
+            
+            PenTarget.Radians = RadiansDelta + PenState->Radians;
+            while(PenTarget.Radians < 0)
+                PenTarget.Radians += 2 * Pi32;
+            while(PenTarget.Radians >= 2 * Pi32)
+                PenTarget.Radians -= 2 * Pi32;
+            
+            // TODO(Zyonji): Smooth out the corners of the width changes a bit.
+            r32 MaximumWidthDelta = Length(DeltaP);
+            r32 WidthDelta = PenTarget.Width - OrcaState->Pen.Width;
+            if( WidthDelta < -MaximumWidthDelta)
+                WidthDelta = -MaximumWidthDelta;
+            if( WidthDelta >  MaximumWidthDelta)
+                WidthDelta =  MaximumWidthDelta;
+            PenTarget.Width = WidthDelta + OrcaState->Pen.Width;
+            
+            OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, PenTarget);
+            
+            //v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
+            if(Inner(DeltaP, Normal) * Inner(PenState->Delta.P, Normal) < 0)
+            {
+                pen_target OffPen = *PenState;
+                if(Inner(Normal, PenState->P - PenTarget.P) < 0)
+                {
+                    Normal = -Normal;
+                }
+                OffPen.P += Normal;
+                OffPen.Color.a = 0;
+                
+                OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, OffPen);
+            }
+            OrcaState->Canvas.Hot = true;
         }
     }
-    return(Result);
+    
+    PenState->Delta.P        = PenTarget.P        - PenState->P;
+    PenState->Delta.Pressure = PenTarget.Pressure - PenState->Pressure;
+    PenState->Delta.Radians  = PenTarget.Radians  - PenState->Radians;
+    PenState->Delta.Width    = PenTarget.Width    - PenState->Width;
+    
+    PenState->P         = PenTarget.P;
+    PenState->Pressure  = PenTarget.Pressure;
+    PenState->Radians   = PenTarget.Radians;
+    PenState->Width     = PenTarget.Width;
+    PenState->Color     = PenTarget.Color;
+    PenState->ColorMode = PenTarget.ColorMode;
+    
+    return true;
 }
