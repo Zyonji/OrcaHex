@@ -42,6 +42,7 @@ struct open_gl
     render_program_base StaticTransferPixelsProgram;
     render_program_base BasicDrawProgram;
     render_program_base LabDrawProgram;
+    render_program_base LchDrawProgram;
     brush_mode_program  BrushModeProgram;
     display_program     DisplayProgram;
     
@@ -49,21 +50,31 @@ struct open_gl
     frame_buffer CanvasFramebuffer;
     frame_buffer SwapFramebuffer;
     frame_buffer MenuFramebuffer;
+    frame_buffer TilesetFramebuffer;
     
     GLuint ScreenFillVertexBuffer;
     GLuint VertexBuffer;
 };
 
 internal GLuint
-OpenGLCreateProgram(char *VertexCode, char *FragmentCode,
-                    render_program_base *Result)
+OpenGLCreateProgram(char *HeaderCode, char *VertexCode, char *FragmentCode, render_program_base *Result)
 {
     GLuint VertexShaderID = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(VertexShaderID, 1, &VertexCode, 0);
+    GLchar *VertexShaderCode[] =
+    {
+        HeaderCode,
+        VertexCode,
+    };
+    glShaderSource(VertexShaderID, ArrayCount(VertexShaderCode), VertexShaderCode, 0);
     glCompileShader(VertexShaderID);
     
     GLuint FragmentShaderID = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(FragmentShaderID, 1, &FragmentCode, 0);
+    GLchar *FragmentShaderCode[] =
+    {
+        HeaderCode,
+        FragmentCode,
+    };
+    glShaderSource(FragmentShaderID, ArrayCount(FragmentShaderCode), FragmentShaderCode, 0);
     glCompileShader(FragmentShaderID);
     
     GLuint ProgramID = glCreateProgram();
@@ -106,11 +117,197 @@ OpenGLCreateProgram(char *VertexCode, char *FragmentCode,
     return(ProgramID);
 }
 
+#if 0
+vec3 ConvertRGBToLab(vec3 RGB)
+{
+    float r = RGB.r;
+    float g = RGB.g;
+    float b = RGB.b;
+    
+    r = (r > 0.04045) ? pow((r + 0.055) / 1.055, 2.4) : (r / 12.92);
+    g = (g > 0.04045) ? pow((g + 0.055) / 1.055, 2.4) : (g / 12.92);
+    b = (b > 0.04045) ? pow((b + 0.055) / 1.055, 2.4) : (b / 12.92);
+    
+    float x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+    float y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+    float z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+    
+    x = x / 0.95047;
+    y = y / 1.0000;
+    z = z / 1.08883;
+    
+    x = (x > 0.008856) ? pow(x, 1.0 / 3.0) : (7.787 * x + 0.160 / 1.160);
+    y = (y > 0.008856) ? pow(y, 1.0 / 3.0) : (7.787 * y + 0.160 / 1.160);
+    z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
+    
+    float L = (1.160 * y) - 0.160;
+    float a = 5.000 * (x - y);
+    float b = 2.000 * (y - z);
+    
+    vec3 Lab = vec3(L, a, b);
+    
+    return(Lab);
+}
+vec3 ConvertLabToRGB(vec3 Lab)
+{
+    float y = (Lab.x + 0.160) / 1.160;
+    float x = Lab.y / 5.000 + y;
+    float z = y - Lab.z / 2.000;
+    
+    float x3 = x * x * x;
+    float y3 = y * y * y;
+    float z3 = z * z * z;
+    
+    x = ((x3 > 0.008856) ? x3 : ((x - 0.160 / 1.160) / 7.787)) * 0.95047;
+    y = ((y3 > 0.008856) ? y3 : ((y - 0.160 / 1.160) / 7.787)) * 1.000;
+    z = ((z3 > 0.008856) ? z3 : ((z - 0.160 / 1.160) / 7.787)) * 1.08883;
+    
+    float r = x *  3.2404542 + y * -1.5371385 + z * -0.4985314;
+    float g = x * -0.9692660 + y *  1.8760108 + z *  0.0415560;
+    float b = x *  0.0556434 + y * -0.2040259 + z *  1.0572252;
+    
+    r = (r > 0.0031308) ? (1.055 * pow(r, 1 / 2.4) - 0.055) : (12.92 * r);
+    g = (g > 0.0031308) ? (1.055 * pow(g, 1 / 2.4) - 0.055) : (12.92 * g);
+    b = (b > 0.0031308) ? (1.055 * pow(b, 1 / 2.4) - 0.055) : (12.92 * b);
+    
+    vec3 RGB = vec3(r, g, b);
+    
+    return(RGB);
+}
+
+vec3 ConvertRGBToLab(vec3 RGB)
+{
+    mat3 ToXYZ = mat3(20416.0 / 41085.0, 319.0 / 1245.0, 957.0 / 41085.0, 2533.0 / 7470.0, 2533.0 / 3735.0, 2533.0 / 22410.0, 245.0 / 1494.0, 49.0 / 747.0, 3871.0 / 4482.0);
+    
+    vec3 Linear = vec3(pow(RGB.x, 2.2), pow(RGB.y, 2.2), pow(RGB.z, 2.2));
+    vec3 XYZ = ToXYZ * Linear;
+    vec3 Cubic = vec3(pow(XYZ.x, 1.0 / 2.4), pow(XYZ.y, 1.0 / 2.4), pow(XYZ.z, 1.0 / 2.4));
+    vec3 Lab = vec3(Cubic.y, Cubic.x - Cubic.y, Cubic.y - Cubic.z);
+    
+    return(Lab);
+}
+vec3 ConvertLabToRGB(vec3 Lab)
+{
+    mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
+    
+    vec3 Cubic = vec3(Lab.y + Lab.x, Lab.x, Lab.x - Lab.z);
+    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
+    vec3 Linear = ToRGB * XYZ;
+    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
+    
+#if 0
+    // NOTE(Zyonji): For the fast algorithm, it should be enough to just clamp values.
+    vec3 Grey = ToRGB * vec3(pow(Cubic.y, 2.4));
+    vec3 Vector = Grey - Linear;
+    vec3 ScaleA = vec3(Vector.x / Grey.x, Vector.y / Grey.y, Vector.z / Grey.z);
+    vec3 ScaleB = vec3(-Vector.x / (1 - Grey.x), -Vector.y / (1 - Grey.y), -Vector.z / (1 - Grey.z));
+    float Distance = max(max(max(ScaleA.x, ScaleB.x), max(ScaleA.y, ScaleB.y)), max(ScaleA.z, ScaleB.z));
+    if(Distance > 1.0)
+    {
+        Linear = Grey - (Vector / Distance);
+    }
+    
+    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
+#endif
+    
+    return(RGB);
+}
+
+#endif
+
+global char *GlobalBasicShaderHeaderCode = R"glsl(
+#version 330
+
+)glsl";
+
+global char *GlobalLabShaderHeaderCode = R"glsl(
+#version 330
+vec3 ConvertRGBToLab(vec3 RGB)
+{
+    float r = RGB.r;
+    float g = RGB.g;
+    float b = RGB.b;
+    
+    r = (r > 0.04045) ? pow((r + 0.055) / 1.055, 2.4) : (r / 12.92);
+    g = (g > 0.04045) ? pow((g + 0.055) / 1.055, 2.4) : (g / 12.92);
+    b = (b > 0.04045) ? pow((b + 0.055) / 1.055, 2.4) : (b / 12.92);
+    
+    float x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+    float y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+    float z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+    
+    x = x / 0.95047;
+    y = y / 1.0000;
+    z = z / 1.08883;
+    
+    x = (x > 0.008856) ? pow(x, 1.0 / 3.0) : (7.787 * x + 0.160 / 1.160);
+    y = (y > 0.008856) ? pow(y, 1.0 / 3.0) : (7.787 * y + 0.160 / 1.160);
+    z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
+    
+    vec3 Lab = vec3((1.160 * y) - 0.160, 5.000 * (x - y), 2.000 * (y - z));
+    
+    return(Lab);
+}
+vec3 ConvertLabToRGB(vec3 Lab)
+{
+    float y = (Lab.x + 0.160) / 1.160;
+    float x = Lab.y / 5.000 + y;
+    float z = y - Lab.z / 2.000;
+    
+    float x3 = x * x * x;
+    float y3 = y * y * y;
+    float z3 = z * z * z;
+    
+    x = ((x3 > 0.008856) ? x3 : ((x - 0.160 / 1.160) / 7.787)) * 0.95047;
+    y = ((y3 > 0.008856) ? y3 : ((y - 0.160 / 1.160) / 7.787)) * 1.000;
+    z = ((z3 > 0.008856) ? z3 : ((z - 0.160 / 1.160) / 7.787)) * 1.08883;
+    
+    float r = x *  3.2404542 + y * -1.5371385 + z * -0.4985314;
+    float g = x * -0.9692660 + y *  1.8760108 + z *  0.0415560;
+    float b = x *  0.0556434 + y * -0.2040259 + z *  1.0572252;
+    
+    r = (r > 0.0031308) ? (1.055 * pow(r, 1 / 2.4) - 0.055) : (12.92 * r);
+    g = (g > 0.0031308) ? (1.055 * pow(g, 1 / 2.4) - 0.055) : (12.92 * g);
+    b = (b > 0.0031308) ? (1.055 * pow(b, 1 / 2.4) - 0.055) : (12.92 * b);
+    
+    vec3 RGB = vec3(r, g, b);
+    
+    return(RGB);
+}
+
+)glsl";
+
+global char *GlobalFastLabShaderHeaderCode = R"glsl(
+#version 330
+vec3 ConvertRGBToLab(vec3 RGB)
+{
+    mat3 ToXYZ = mat3(20416.0 / 41085.0, 319.0 / 1245.0, 957.0 / 41085.0, 2533.0 / 7470.0, 2533.0 / 3735.0, 2533.0 / 22410.0, 245.0 / 1494.0, 49.0 / 747.0, 3871.0 / 4482.0);
+    
+    vec3 Linear = vec3(pow(RGB.x, 2.2), pow(RGB.y, 2.2), pow(RGB.z, 2.2));
+    vec3 XYZ = ToXYZ * Linear;
+    vec3 Cubic = vec3(pow(XYZ.x, 1.0 / 2.4), pow(XYZ.y, 1.0 / 2.4), pow(XYZ.z, 1.0 / 2.4));
+    vec3 Lab = vec3(Cubic.y, Cubic.x - Cubic.y, Cubic.y - Cubic.z);
+    
+    return(Lab);
+}
+vec3 ConvertLabToRGB(vec3 Lab)
+{
+    mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
+    
+    vec3 Cubic = vec3(Lab.y + Lab.x, Lab.x, Lab.x - Lab.z);
+    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
+    vec3 Linear = ToRGB * XYZ;
+    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
+    
+    return(RGB);
+}
+
+)glsl";
+
 internal GLuint
 CompileVisualTransparency(open_gl *OpenGL, render_program_base *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 uniform mat4 Transform;
 
@@ -127,7 +324,6 @@ Color = VertColor;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 
 smooth in vec4 Color;
@@ -145,7 +341,7 @@ FragmentColor = vec4(1 - FragmentColor.x, 1 - FragmentColor.y, 1 - FragmentColor
 }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, Result);
+    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
@@ -154,7 +350,6 @@ internal GLuint
 CompileTransferPixels(open_gl *OpenGL, render_program_base *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 uniform mat4 Transform;
 
@@ -172,7 +367,6 @@ FragUV = VertUV;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 uniform sampler2D Image;
 
@@ -186,7 +380,7 @@ FragmentColor = texture(Image, FragUV);
 }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, Result);
+    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
@@ -194,7 +388,6 @@ internal GLuint
 CompileStaticTransferPixels(open_gl *OpenGL, render_program_base *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 uniform mat4 Transform;
 
@@ -211,7 +404,6 @@ FragUV = (0.5 * Position.xy) + vec2(0.5);
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 uniform sampler2D Image;
 
@@ -225,17 +417,15 @@ FragmentColor = texture(Image, FragUV);
 }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, Result);
+    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
-
 
 internal GLuint
 CompileBasicDraw(open_gl *OpenGL, render_program_base *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 in vec4 VertP;
 in vec4 VertColor;
@@ -250,7 +440,6 @@ Color = VertColor;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 
 smooth in vec4 Color;
@@ -263,7 +452,7 @@ FragmentColor = Color;
      }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, Result);
+    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
@@ -272,7 +461,6 @@ internal GLuint
 CompileLabDraw(open_gl *OpenGL, render_program_base *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 in vec4 VertP;
 in vec4 VertColor;
@@ -287,7 +475,6 @@ Color = VertColor;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 
 smooth in vec4 Color;
@@ -296,13 +483,8 @@ out vec4 FragmentColor;
 
 void main(void)
 {
-mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
+vec3 RGB = ConvertLabToRGB(Color.xyz);
 
-vec3 Cubic = vec3(Color.y + Color.x, Color.x, Color.x - Color.z);
-    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
-    vec3 Linear = ToRGB * XYZ;
-    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
-    
     float Cmax = max(max(RGB.x, RGB.y), RGB.z);
     float Cmin = min(min(RGB.x, RGB.y), RGB.z);
     if(Cmax > 1.0 || Cmin < 0.0)
@@ -314,7 +496,51 @@ vec3 Cubic = vec3(Color.y + Color.x, Color.x, Color.x - Color.z);
      }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, Result);
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, Result);
+    
+    return(Program);
+}
+internal GLuint
+CompileLchDraw(open_gl *OpenGL, render_program_base *Result)
+{
+    char *VertexCode = R"glsl(
+// Vertex code
+in vec4 VertP;
+in vec4 VertColor;
+
+smooth out vec4 Color;
+
+void main(void)
+{
+gl_Position = VertP;
+Color = VertColor;
+}
+)glsl";
+    
+    char *FragmentCode = R"glsl(
+// Fragment code
+
+smooth in vec4 Color;
+
+out vec4 FragmentColor;
+
+void main(void)
+{
+vec3 Lab = vec3(Color.x, Color.y * cos(Color.z), Color.y * sin(Color.z));
+vec3 RGB = ConvertLabToRGB(Lab);
+
+    float Cmax = max(max(RGB.x, RGB.y), RGB.z);
+    float Cmin = min(min(RGB.x, RGB.y), RGB.z);
+    if(Cmax > 1.0 || Cmin < 0.0)
+    {
+         RGB = vec3(0.9);
+    }
+    
+     FragmentColor = vec4(RGB, 1);
+     }
+)glsl";
+    
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
@@ -325,7 +551,6 @@ internal GLuint
 CompileBrushMode(open_gl *OpenGL, brush_mode_program *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 uniform mat4 Transform;
 
@@ -348,7 +573,6 @@ Color = VertColor;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 uniform vec4 BrushMode;
 uniform sampler2D Image;
@@ -363,42 +587,19 @@ void main(void)
 {
 float Alpha = Color.w * clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
 
-mat3 ToXYZ = mat3(20416.0 / 41085.0, 319.0 / 1245.0, 957.0 / 41085.0, 2533.0 / 7470.0, 2533.0 / 3735.0, 2533.0 / 22410.0, 245.0 / 1494.0, 49.0 / 747.0, 3871.0 / 4482.0);
-mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
-
-vec3 Linear0 = vec3(pow(Color.x, 2.2), pow(Color.y, 2.2), pow(Color.z, 2.2));
-    vec3 XYZ0 = ToXYZ * Linear0;
-    vec3 Cubic0 = vec3(pow(XYZ0.x, 1.0 / 2.4), pow(XYZ0.y, 1.0 / 2.4), pow(XYZ0.z, 1.0 / 2.4));
-     vec3 Lab0 = vec3(Cubic0.y, Cubic0.x - Cubic0.y, Cubic0.y - Cubic0.z);
-     
-     vec4 Color1 = texture(Image, FragXY);
-    vec3 Linear1 = vec3(pow(Color1.x, 2.2), pow(Color1.y, 2.2), pow(Color1.z, 2.2));
-    vec3 XYZ1 = ToXYZ * Linear1;
-    vec3 Cubic1 = vec3(pow(XYZ1.x, 1.0 / 2.4), pow(XYZ1.y, 1.0 / 2.4), pow(XYZ1.z, 1.0 / 2.4));
-     vec3 Lab1 = vec3(Cubic1.y, Cubic1.x - Cubic1.y, Cubic1.y - Cubic1.z);
+vec3 Lab0 = ConvertRGBToLab(Color.xyz);
+     vec3 Lab1 = ConvertRGBToLab(texture(Image, FragXY).xyz);
      
      vec3 BlendMode = vec3(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y);
      vec3 Lab = mix(Lab1, Lab0, BlendMode);
      
-    vec3 Cubic = vec3(Lab.y + Lab.x, Lab.x, Lab.x - Lab.z);
-    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
-    vec3 Linear = ToRGB * XYZ;
+    vec3 RGB = ConvertLabToRGB(Lab);
     
-    vec3 Grey = ToRGB * vec3(pow(Cubic.y, 2.4));
-    vec3 Vector = Grey - Linear;
-    vec3 ScaleA = vec3(Vector.x / Grey.x, Vector.y / Grey.y, Vector.z / Grey.z);
-    vec3 ScaleB = vec3(-Vector.x / (1 - Grey.x), -Vector.y / (1 - Grey.y), -Vector.z / (1 - Grey.z));
-     float Distance = max(max(max(ScaleA.x, ScaleB.x), max(ScaleA.y, ScaleB.y)), max(ScaleA.z, ScaleB.z));
-    if(Distance > 1.0)
-    {
-         Linear = Grey - (Vector / Distance);
-    }
-    
-     FragmentColor = vec4(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2), 1);
+     FragmentColor = vec4(RGB, 1);
      }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, &Result->Common);
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
     
     Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
     
@@ -409,7 +610,6 @@ internal GLuint
 CompileDisplay(open_gl *OpenGL, display_program *Result)
 {
     char *VertexCode = R"glsl(
-#version 330
 // Vertex code
 uniform mat4 Transform;
 
@@ -426,7 +626,6 @@ FragUV = VertUV;
 )glsl";
     
     char *FragmentCode = R"glsl(
-#version 330
 // Fragment code
 precision highp float;
 
@@ -455,7 +654,7 @@ if((floor(gl_FragCoord.xy) == Cursor) || (abs(U) <= max(HalfWidth, 1.5) && abs(V
 }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(VertexCode, FragmentCode, &Result->Common);
+    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
     
     Result->CursorID = glGetUniformLocation(Program, "Cursor");
     Result->HalfWidthID = glGetUniformLocation(Program, "HalfWidth");
@@ -563,7 +762,6 @@ OpenGLInitPrograms(open_gl *OpenGL)
     b32 Return = true;
     
     glEnable(GL_SCISSOR_TEST);
-    glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
     GLuint DummyVertexArray;
     glGenVertexArrays(1, &DummyVertexArray);
     glBindVertexArray(DummyVertexArray);
@@ -590,32 +788,37 @@ OpenGLInitPrograms(open_gl *OpenGL)
         LogError("Unable to compile the transparency visualizer.", "OpenGL");
         Return = false;
     }
-    if(!CompileTransferPixels(OpenGL,     &OpenGL->TransferPixelsProgram))
+    if(!CompileTransferPixels(OpenGL,       &OpenGL->TransferPixelsProgram))
     {
         LogError("Unable to compile the pixel transfer program.", "OpenGL");
         Return = false;
     }
-    if(!CompileStaticTransferPixels(OpenGL,     &OpenGL->StaticTransferPixelsProgram))
+    if(!CompileStaticTransferPixels(OpenGL, &OpenGL->StaticTransferPixelsProgram))
     {
         LogError("Unable to compile the pixel transfer program.", "OpenGL");
         Return = false;
     }
-    if(!CompileBasicDraw(OpenGL,          &OpenGL->BasicDrawProgram))
+    if(!CompileBasicDraw(OpenGL,            &OpenGL->BasicDrawProgram))
     {
         LogError("Unable to compile the basic draw program.", "OpenGL");
         Return = false;
     }
-    if(!CompileLabDraw(OpenGL,            &OpenGL->LabDrawProgram))
+    if(!CompileLabDraw(OpenGL,              &OpenGL->LabDrawProgram))
     {
         LogError("Unable to compile the Lab draw program.", "OpenGL");
         Return = false;
     }
-    if(!CompileBrushMode(OpenGL,          &OpenGL->BrushModeProgram))
+    if(!CompileLchDraw(OpenGL,              &OpenGL->LchDrawProgram))
+    {
+        LogError("Unable to compile the Lch draw program.", "OpenGL");
+        Return = false;
+    }
+    if(!CompileBrushMode(OpenGL,            &OpenGL->BrushModeProgram))
     {
         LogError("Unable to compile the brush stroke renderer.", "OpenGL");
         Return = false;
     }
-    if(!CompileDisplay(OpenGL,            &OpenGL->DisplayProgram))
+    if(!CompileDisplay(OpenGL,              &OpenGL->DisplayProgram))
     {
         LogError("Unable to compile the buffer display program.", "OpenGL");
         Return = false;
@@ -651,8 +854,7 @@ CreateFramebuffer(open_gl *OpenGL, u32 Width, u32 Height, void *Memory)
     glBindFramebuffer(GL_FRAMEBUFFER, Result.FramebufferHandle);
     
     Result.ColorHandle  = FramebufferTextureImage(OpenGL, GL_TEXTURE_2D, Width, Height, GL_RGBA8, Memory);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           Result.ColorHandle, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Result.ColorHandle, 0);
     
     //GLenum FrameBufferStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     //Assert(FrameBufferStatus == GL_FRAMEBUFFER_COMPLETE);
@@ -704,144 +906,6 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
     }
 }
 
-internal void
-UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 ColorMode)
-{
-    glEnable(GL_BLEND);
-    
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->MenuFramebuffer.FramebufferHandle);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
-    glViewport(0, 0, Menu->Size.Width, Menu->Size.Height);
-    
-    r32 PressureMode = 0;
-    if(ColorMode & COLOR_MODE_PRESSURE)
-    {
-        PressureMode = 1;
-    }
-    glClearColor(1 - PressureMode, 1 - PressureMode, 1 - PressureMode, 1);
-    glScissor(Menu->ColorA.x, Menu->ColorA.y, Menu->ColorA.Height, Menu->ColorA.Width);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(PressureMode, PressureMode, PressureMode, 1);
-    glScissor(Menu->ColorB.x, Menu->ColorB.y, Menu->ColorB.Height, Menu->ColorB.Width);
-    glClear(GL_COLOR_BUFFER_BIT);
-    
-    r32 AlphaMode = 0;
-    if(ColorMode & COLOR_MODE_ALPHA)
-    {
-        AlphaMode = 1;
-    }
-    glClearColor(1 - AlphaMode, 1 - AlphaMode, 1 - AlphaMode, 1);
-    glScissor(Menu->AlphaButton.x, Menu->AlphaButton.y, Menu->AlphaButton.Height, Menu->AlphaButton.Width);
-    glClear(GL_COLOR_BUFFER_BIT);
-    r32 LuminaceMode = 0;
-    if(ColorMode & COLOR_MODE_LUMINANCE)
-    {
-        LuminaceMode = 1;
-    }
-    glClearColor(1 - LuminaceMode, 1 - LuminaceMode, 1 - LuminaceMode, 1);
-    glScissor(Menu->LButton.x, Menu->LButton.y, Menu->LButton.Height, Menu->LButton.Width);
-    glClear(GL_COLOR_BUFFER_BIT);
-    r32 ChromaMode = 0;
-    if(ColorMode & COLOR_MODE_CHROMA)
-    {
-        ChromaMode = 1;
-    }
-    glClearColor(1 - ChromaMode, 1 - ChromaMode, 1 - ChromaMode, 1);
-    glScissor(Menu->abButton.x, Menu->abButton.y, Menu->abButton.Height, Menu->abButton.Width);
-    glClear(GL_COLOR_BUFFER_BIT);
-    
-    glClearColor(Color.x, Color.y, Color.z, 1);
-    glScissor(Menu->ColorB.x + Menu->Gap / 2, Menu->ColorB.y + Menu->Gap / 2, Menu->ColorB.Height - Menu->Gap, Menu->ColorB.Width - Menu->Gap);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glScissor(Menu->ColorA.x + Menu->Gap / 2, Menu->ColorA.y + Menu->Gap / 2, Menu->ColorA.Height - Menu->Gap, Menu->ColorA.Width - Menu->Gap);
-    glClear(GL_COLOR_BUFFER_BIT);
-    OpenGLProgramBegin(&OpenGL->VisualTransparency);
-    glBlendColor(1 - Color.a, 1 - Color.a, 1 - Color.a, 1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    OpenGLProgramEnd(&OpenGL->VisualTransparency);
-    
-    for(u32 I = 0; I < Menu->Steps; ++I)
-    {
-        r32 Alpha = (r32)I / (r32)(Menu->Steps - 1);
-        glBlendColor(Alpha, Alpha, Alpha, 0);
-        glScissor(Menu->Alpha.x + I * Menu->Offset.x, Menu->Alpha.y + I * Menu->Offset.y, Menu->Alpha.Width, Menu->Alpha.Height);
-        glClear(GL_COLOR_BUFFER_BIT);
-        OpenGLProgramBegin(&OpenGL->VisualTransparency);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        OpenGLProgramEnd(&OpenGL->VisualTransparency);
-    }
-    
-    glDisable(GL_BLEND);
-    
-    v3 Lab = ConvertRGBToLab(Color.xyz);
-    for(u32 I = 0; I < Menu->Steps; ++I)
-    {
-        r32 L = (r32)(I + 1) / (r32)(Menu->Steps + 1);
-        v3 RGB = ConvertLabToRGB({L, Lab.y, Lab.z});
-        v3 Grey = ConvertLabToRGB({L, 0, 0});
-        RGB = ValidateRGB(RGB, Grey);
-        glClearColor(RGB.x, RGB.y, RGB.z, 1);
-        glScissor(Menu->L.x + I * Menu->Offset.x, Menu->L.y + I * Menu->Offset.y, Menu->L.Width, Menu->L.Height);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
-    
-    v4 a00, a01, a10, a11, b00, b01, b10, b11;
-    v4 Limits = GetABLimits(Color.xyz);
-    if(Menu->Size.Width > Menu->Size.Height)
-    {
-        a00 = {Lab.x, Limits.x, Lab.z + 0.02f, 1};
-        a01 = {Lab.x, Limits.x, Lab.z - 0.02f, 1};
-        a10 = {Lab.x, Limits.y, Lab.z + 0.02f, 1};
-        a11 = {Lab.x, Limits.y, Lab.z - 0.02f, 1};
-        b00 = {Lab.x, Lab.y + 0.02f, Limits.z, 1};
-        b01 = {Lab.x, Lab.y - 0.02f, Limits.z, 1};
-        b10 = {Lab.x, Lab.y + 0.02f, Limits.w, 1};
-        b11 = {Lab.x, Lab.y - 0.02f, Limits.w, 1};
-    }
-    else
-    {
-        a00 = {Lab.x, Limits.y, Lab.z + 0.02f, 1};
-        a01 = {Lab.x, Limits.x, Lab.z + 0.02f, 1};
-        a10 = {Lab.x, Limits.y, Lab.z - 0.02f, 1};
-        a11 = {Lab.x, Limits.x, Lab.z - 0.02f, 1};
-        b00 = {Lab.x, Lab.y + 0.02f, Limits.w, 1};
-        b01 = {Lab.x, Lab.y + 0.02f, Limits.z, 1};
-        b10 = {Lab.x, Lab.y - 0.02f, Limits.w, 1};
-        b11 = {Lab.x, Lab.y - 0.02f, Limits.z, 1};
-    }
-    
-    glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
-    glScissor(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
-    common_vertex Vertices[] =
-    {
-        {{ 1,  1, 0, 1}, { 0, 0}, a00},
-        {{ 1, -1, 0, 1}, { 0, 0}, a01},
-        {{-1,  1, 0, 1}, { 0, 0}, a10},
-        {{-1, -1, 0, 1}, { 0, 0}, a11},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    OpenGLProgramBegin(&OpenGL->LabDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->LabDrawProgram);
-    
-    glViewport(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
-    glScissor(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
-    common_vertex Vertices2[] =
-    {
-        {{ 1,  1, 0, 1}, { 0, 0}, b00},
-        {{ 1, -1, 0, 1}, { 0, 0}, b01},
-        {{-1,  1, 0, 1}, { 0, 0}, b10},
-        {{-1, -1, 0, 1}, { 0, 0}, b11},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
-    OpenGLProgramBegin(&OpenGL->LabDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices2)/sizeof(*Vertices2)));
-    OpenGLProgramEnd(&OpenGL->LabDrawProgram);
-}
-
-// TODO(Zyonji): Should I source from a mipmap instead?
 internal v4
 PickColor(open_gl *OpenGL, v2 P, v2u Size)
 {
@@ -853,378 +917,129 @@ PickColor(open_gl *OpenGL, v2 P, v2u Size)
     return(Result);
 }
 
+internal v2
+NormalizeTiles(v2 P)
+{
+    v2 Result = {P.x / TilesWidth, P.y / TilesHeight};
+    return(Result);
+}
 internal void
-DrawButton(u32area Area)
+DrawTile(open_gl *OpenGL, u32area Area, v2 P00, v2 P01, v2 P10, v2 P11)
 {
     glViewport(Area.x, Area.y, Area.Width, Area.Height);
     glScissor(Area.x, Area.y, Area.Width, Area.Height);
-    glClearColor(0.6, 0.6, 0.6, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    
+    common_vertex Vertices[] =
+    {
+        {{-1, -1, 0, 1}, NormalizeTiles(P00), {0, 0, 0, 1}},
+        {{-1,  1, 0, 1}, NormalizeTiles(P01), {0, 0, 0, 1}},
+        {{ 1, -1, 0, 1}, NormalizeTiles(P10), {0, 0, 0, 1}},
+        {{ 1,  1, 0, 1}, NormalizeTiles(P11), {0, 0, 0, 1}},
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+    
+    m4x4 Transform = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->TilesetFramebuffer.ColorHandle);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
+}
+internal void
+DrawButton(open_gl *OpenGL, u32area Area)
+{
+    DrawTile(OpenGL, Area, {  0.0f, 384.0f}, {  0.0f, 448.0f}, { 64.0f, 384.0f}, { 64.0f, 448.0f});
 }
 internal void
 DrawButtonNew(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 1/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  6/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 5/8.0,  3/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f, 192.0f}, {  0.0f, 256.0f}, { 64.0f, 192.0f}, { 64.0f, 256.0f});
 }
 internal void
 DrawButtonOpen(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{-5/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-1/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-1/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f, 256.0f}, {  0.0f, 320.0f}, { 64.0f, 256.0f}, { 64.0f, 320.0f});
 }
 internal void
 DrawButtonSave(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{-3/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
-    
-    common_vertex Vertices2[] =
-    {
-        {{-2/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices2)/sizeof(*Vertices2)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f, 320.0f}, {  0.0f, 384.0f}, { 64.0f, 320.0f}, { 64.0f, 384.0f});
 }
 internal void
 DrawButtonRotateR(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 0/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0, -3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 7/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{4.5/8.0, -2.5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f, 128.0f}, {128.0f, 192.0f}, {192.0f, 128.0f}, {192.0f, 192.0f});
 }
 internal void
 DrawButtonRotateL(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 0/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0, -3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 4/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0,  3/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-7/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  0/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4.5/8.0, -2.5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f,  64.0f}, {128.0f, 128.0f}, {192.0f,  64.0f}, {192.0f, 128.0f});
 }
 internal void
 DrawButtonOneToOne(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0, -2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0, -2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f,  64.0f}, {  0.0f, 128.0f}, { 64.0f,  64.0f}, { 64.0f, 128.0f});
 }
 internal void
 DrawButtonReset(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0, -5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-5/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 5/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
-    
-    common_vertex Vertices2[] =
-    {
-        {{ 1/8.0,  1/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 1/8.0, -1/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{-1/8.0,  1/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{-1/8.0, -1/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices2)/sizeof(*Vertices2)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f, 128.0f}, {  0.0f, 192.0f}, { 64.0f, 128.0f}, { 64.0f, 192.0f});
 }
 internal void
 DrawButtonMinus(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 6/8.0,  1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0,  1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f, 320.0f}, {128.0f, 384.0f}, {192.0f, 320.0f}, {192.0f, 384.0f});
 }
 internal void
 DrawButtonPlus(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{ 6/8.0,  1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0,  1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -1/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0, 0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 0, 0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 1/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-1/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-1/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f, 384.0f}, {128.0f, 448.0f}, {192.0f, 384.0f}, {192.0f, 448.0f});
 }
 internal void
 DrawButtonSmall(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{-2/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 2/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 4/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{-4/8.0, -8/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 4/8.0, -8/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f, 256.0f}, {128.0f, 320.0f}, {192.0f, 256.0f}, {192.0f, 320.0f});
 }
 internal void
 DrawButtonBig(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{-7/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 7/8.0,  5/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-7/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 7/8.0,  2/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-4/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 4/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{-4/8.0, -8/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 4/8.0, -8/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {128.0f, 192.0f}, {128.0f, 256.0f}, {192.0f, 192.0f}, {192.0f, 256.0f});
 }
 internal void
 DrawButtonMirror(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    common_vertex Vertices[] =
-    {
-        {{-6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-3/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{-1/8.0,  2/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1/8.0,  7/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{-1/8.0, -7/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 1/8.0,  7/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 1/8.0, -7/8.0, 0, 1}, { 0, 0}, {0.3, 0.3, 0.3, 1}},
-        {{ 1/8.0,  2/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1/8.0, -2/8.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 3/8.0,  4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 3/8.0, -4/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0,  6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-        {{ 6/8.0, -6/8.0, 0, 1}, { 0, 0}, {0, 0, 0, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    DrawTile(OpenGL, Area, {  0.0f,   0.0f}, {  0.0f,  64.0f}, { 64.0f,   0.0f}, { 64.0f,  64.0f});
 }
 internal void
-DrawPallet(u32area Area, u32 Gap)
+DrawTimerBorder(open_gl *OpenGL, u32area Area)
 {
-    DrawButton(Area);
-    
-    u32 X = Area.x + Gap;
-    u32 Y = Area.y + Gap;
-    u32 Half = (Area.Width - 2 * Gap) / 2;
-    u32 Third = (Area.Width - 2 * Gap) / 3;
+    if(Area.Height < Area.Width)
+    {
+        DrawTile(OpenGL, Area, { 52.0f, 464.0f}, { 52.0f, 512.0f}, { 60.0f, 464.0f}, { 60.0f, 512.0f});
+    }
+    else
+    {
+        DrawTile(OpenGL, Area, { 52.0f, 464.0f}, { 60.0f, 464.0f}, { 52.0f, 512.0f}, { 60.0f, 512.0f});
+    }
+}
+internal void
+DrawPallet(u32area Area)
+{
+    u32 X = Area.x;
+    u32 Y = Area.y;
+    u32 Half = Area.Width / 2;
+    u32 Third = Area.Width / 3;
     glClearColor(1, 1, 1, 1);
     glScissor(X, Y + 2 * Third, Half, Third);
     glClear(GL_COLOR_BUFFER_BIT);
     glClearColor(0, 0, 0, 1);
-    glScissor(X + Half, Y + 2 * Third, Half, Third);
+    glScissor(X + Half, Y + 2 * Third, Third * 3 - Half, Third);
     glClear(GL_COLOR_BUFFER_BIT);
     glClearColor(1, 0, 0, 1);
     glScissor(X, Y + Third, Third, Third);
@@ -1246,90 +1061,286 @@ DrawPallet(u32area Area, u32 Gap)
     glClear(GL_COLOR_BUFFER_BIT);
 }
 internal void
-DrawToggleTop(open_gl *OpenGL, u32area Area, u32 Gap)
+DrawToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
 {
-    glViewport(Area.x - Gap/2, Area.y - Gap/2, Area.Width + Gap, Area.Height + 3 * Gap);
-    glScissor(Area.x - Gap/2, Area.y - Gap/2, Area.Width + Gap, Area.Height + 3 * Gap);
-    common_vertex Vertices[] =
+    if(Toggle)
     {
-        {{ 0,  7/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1,  3/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1,  3/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1, -7/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1, -7/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+        DrawTile(OpenGL, Area, {256.0f, 448.0f}, {256.0f, 480.0f}, {288.0f, 448.0f}, {288.0f, 480.0f});
+    }
+    else
+    {
+        DrawTile(OpenGL, Area, {256.0f, 480.0f}, {256.0f, 512.0f}, {288.0f, 480.0f}, {288.0f, 512.0f});
+    }
 }
 internal void
-DrawToggleLeft(open_gl *OpenGL, u32area Area, u32 Gap)
+DrawColorToggle(open_gl *OpenGL, u32area Area, b32 Mirrored, b32 Toggle)
 {
-    glViewport(Area.x - 5 * Gap/2, Area.y - Gap/2, Area.Width + 3 * Gap, Area.Height + Gap);
-    glScissor(Area.x - 5 * Gap/2, Area.y - Gap/2, Area.Width + 3 * Gap, Area.Height + Gap);
-    common_vertex Vertices[] =
+    r32 X1, X2, Y1, Y2;
+    if(Mirrored)
     {
-        {{-7/7.0,  0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-3/7.0, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-3/7.0,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 7/7.0, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 7/7.0,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        X1 = 256.0f;
+        X2 = 288.0f;
+    }
+    else
+    {
+        X1 = 288.0f;
+        X2 = 256.0f;
+    }
+    if(Toggle)
+    {
+        Y1 = 320.0f;
+        Y2 = 384.0f;
+    }
+    else
+    {
+        Y1 = 384.0f;
+        Y2 = 448.0f;
+    }
     
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    if(Area.Height > Area.Width)
+    {
+        DrawTile(OpenGL, Area, {X1, Y1}, {X1, Y2}, {X2, Y1}, {X2, Y2});
+    }
+    else
+    {
+        DrawTile(OpenGL, Area, {X1, Y1}, {X2, Y1}, {X1, Y2}, {X2, Y2});
+    }
 }
 internal void
-DrawToggleBottom(open_gl *OpenGL, u32area Area, u32 Gap)
+DrawShortToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
 {
-    glViewport(Area.x - Gap/2, Area.y - 5 * Gap/2, Area.Width + Gap, Area.Height + 3 * Gap);
-    glScissor(Area.x - Gap/2, Area.y - 5 * Gap/2, Area.Width + Gap, Area.Height + 3 * Gap);
-    common_vertex Vertices[] =
+    if(Toggle)
     {
-        {{-1, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 0, -3/7.0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+        if(Area.Height < Area.Width)
+        {
+            DrawTile(OpenGL, Area, { 64.0f, 480.0f}, { 64.0f, 512.0f}, {128.0f, 480.0f}, {128.0f, 512.0f});
+        }
+        else
+        {
+            DrawTile(OpenGL, Area, { 64.0f, 512.0f}, {128.0f, 512.0f}, { 64.0f, 480.0f}, {128.0f, 480.0f});
+        }
+    }
+    else
+    {
+        if(Area.Height < Area.Width)
+        {
+            DrawTile(OpenGL, Area, { 64.0f, 448.0f}, { 64.0f, 480.0f}, {128.0f, 448.0f}, {128.0f, 480.0f});
+        }
+        else
+        {
+            DrawTile(OpenGL, Area, { 64.0f, 480.0f}, {128.0f, 480.0f}, { 64.0f, 448.0f}, {128.0f, 448.0f});
+        }
+    }
 }
 internal void
-DrawToggleRight(open_gl *OpenGL, u32area Area, u32 Gap)
+DrawLongToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
 {
-    glViewport(Area.x - Gap/2, Area.y - Gap/2, Area.Width + 3 * Gap, Area.Height + Gap);
-    glScissor(Area.x - Gap/2, Area.y - Gap/2, Area.Width + 3 * Gap, Area.Height + Gap);
-    common_vertex Vertices[] =
+    if(Toggle)
     {
-        {{ 1, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1, -1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 3/7.0, 0, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{-1,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-        {{ 1,  1, 0, 1}, { 0, 0}, {0.6, 0.6, 0.6, 1}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        if(Area.Height < Area.Width)
+        {
+            DrawTile(OpenGL, Area, {128.0f, 480.0f}, {128.0f, 512.0f}, {256.0f, 480.0f}, {256.0f, 512.0f});
+        }
+        else
+        {
+            DrawTile(OpenGL, Area, {128.0f, 512.0f}, {256.0f, 512.0f}, {128.0f, 480.0f}, {256.0f, 480.0f});
+        }
+    }
+    else
+    {
+        if(Area.Height < Area.Width)
+        {
+            DrawTile(OpenGL, Area, {128.0f, 448.0f}, {128.0f, 480.0f}, {256.0f, 448.0f}, {256.0f, 480.0f});
+        }
+        else
+        {
+            DrawTile(OpenGL, Area, {128.0f, 480.0f}, {256.0f, 480.0f}, {128.0f, 448.0f}, {256.0f, 448.0f});
+        }
+    }
+}
+
+internal void
+UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
+{
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->MenuFramebuffer.FramebufferHandle);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+    glViewport(0, 0, Menu->Size.Width, Menu->Size.Height);
     
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
+    glClearColor(Color.x, Color.y, Color.z, 1);
+    glScissor(Menu->ColorB.x, Menu->ColorB.y, Menu->ColorB.Height, Menu->ColorB.Width);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(Menu->ColorA.x, Menu->ColorA.y, Menu->ColorA.Height, Menu->ColorA.Width);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
+    
+    OpenGLProgramBegin(&OpenGL->VisualTransparency);
+    glBlendColor(1 - Color.a, 1 - Color.a, 1 - Color.a, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    OpenGLProgramEnd(&OpenGL->VisualTransparency);
+    
+    for(u32 I = 0; I < Menu->Steps; ++I)
+    {
+        r32 Alpha = (r32)I / (r32)(Menu->Steps - 1);
+        glBlendColor(Alpha, Alpha, Alpha, 0);
+        glScissor(Menu->Alpha.x + I * Menu->Offset.x, Menu->Alpha.y + I * Menu->Offset.y, Menu->Alpha.Width, Menu->Alpha.Height);
+        glClear(GL_COLOR_BUFFER_BIT);
+        OpenGLProgramBegin(&OpenGL->VisualTransparency);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        OpenGLProgramEnd(&OpenGL->VisualTransparency);
+    }
+    
+    glDisable(GL_BLEND);
+    
+    DrawToggle(OpenGL, Menu->TiltButton, Mode & TILT_MODE_DISABLE);
+    DrawToggle(OpenGL, Menu->PenButtonsButton, Mode & PEN_BUTTON_MODE_FLIPPED);
+    
+    DrawColorToggle(OpenGL, Menu->ColorButtonA, true, Mode & COLOR_MODE_PRESSURE);
+    DrawColorToggle(OpenGL, Menu->ColorButtonB, false, !(Mode & COLOR_MODE_PRESSURE));
+    DrawShortToggle(OpenGL, Menu->AlphaButton, !(Mode & COLOR_MODE_ALPHA));
+    DrawShortToggle(OpenGL, Menu->LButton, !(Mode & COLOR_MODE_LUMINANCE));
+    DrawLongToggle(OpenGL, Menu->abButton, !(Mode & COLOR_MODE_CHROMA));
+    DrawToggle(OpenGL, Menu->chButton, (Mode & MENU_MODE_AB));
+    
+    v3 Lab = ConvertRGBToLab(Color.xyz);
+    for(u32 I = 0; I < Menu->Steps; ++I)
+    {
+        r32 L = (r32)(I + 1) / (r32)(Menu->Steps + 1);
+        v3 RGB = ValidatedRGBfromLab({L, Lab.y, Lab.z});
+        glClearColor(RGB.x, RGB.y, RGB.z, 1);
+        glScissor(Menu->L.x + I * Menu->Offset.x, Menu->L.y + I * Menu->Offset.y, Menu->L.Width, Menu->L.Height);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    
+    if(Mode & MENU_MODE_AB)
+    {
+        v4 a00, a01, a10, a11, b00, b01, b10, b11;
+        r32 Limit = GetABLimit(Color.xyz);
+        if(Menu->Size.Width > Menu->Size.Height)
+        {
+            r32 Width = Limit * Menu->a.Height / Menu->a.Width;
+            a00 = {Lab.x, -Limit, Lab.z + Width, 1};
+            a01 = {Lab.x, -Limit, Lab.z - Width, 1};
+            a10 = {Lab.x,  Limit, Lab.z + Width, 1};
+            a11 = {Lab.x,  Limit, Lab.z - Width, 1};
+            b00 = {Lab.x, Lab.y + Width, -Limit, 1};
+            b01 = {Lab.x, Lab.y - Width, -Limit, 1};
+            b10 = {Lab.x, Lab.y + Width,  Limit, 1};
+            b11 = {Lab.x, Lab.y - Width,  Limit, 1};
+        }
+        else
+        {
+            r32 Width = Limit * Menu->a.Width / Menu->a.Height;
+            a00 = {Lab.x,  Limit, Lab.z + Width, 1};
+            a01 = {Lab.x, -Limit, Lab.z + Width, 1};
+            a10 = {Lab.x,  Limit, Lab.z - Width, 1};
+            a11 = {Lab.x, -Limit, Lab.z - Width, 1};
+            b00 = {Lab.x, Lab.y + Width,  Limit, 1};
+            b01 = {Lab.x, Lab.y + Width, -Limit, 1};
+            b10 = {Lab.x, Lab.y - Width,  Limit, 1};
+            b11 = {Lab.x, Lab.y - Width, -Limit, 1};
+        }
+        
+        glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
+        glScissor(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
+        common_vertex Vertices[] =
+        {
+            {{ 1,  1, 0, 1}, { 0, 0}, a00},
+            {{ 1, -1, 0, 1}, { 0, 0}, a01},
+            {{-1,  1, 0, 1}, { 0, 0}, a10},
+            {{-1, -1, 0, 1}, { 0, 0}, a11},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        OpenGLProgramBegin(&OpenGL->LabDrawProgram);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+        OpenGLProgramEnd(&OpenGL->LabDrawProgram);
+        
+        glViewport(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
+        glScissor(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
+        common_vertex Vertices2[] =
+        {
+            {{ 1,  1, 0, 1}, { 0, 0}, b00},
+            {{ 1, -1, 0, 1}, { 0, 0}, b01},
+            {{-1,  1, 0, 1}, { 0, 0}, b10},
+            {{-1, -1, 0, 1}, { 0, 0}, b11},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
+        OpenGLProgramBegin(&OpenGL->LabDrawProgram);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices2)/sizeof(*Vertices2)));
+        OpenGLProgramEnd(&OpenGL->LabDrawProgram);
+    }
+    else
+    {
+        v4 a00, a01, a10, a11, b00, b01, b10, b11;
+        v3 Lch = {Lab.x, Length(Lab.yz), (r32)atan2(Lab.z, Lab.y)};
+        if(Lch.z < 0)
+        {
+            Lch.z += Pi32;
+        }
+        r32 Limit = GetABLimit(Color.xyz);
+        if(Menu->Size.Width > Menu->Size.Height)
+        {
+            r32 Width = Limit * Menu->a.Height / Menu->a.Width;
+            a00 = {Lch.x, -Limit, Lch.z + Width, 1};
+            a01 = {Lch.x, -Limit, Lch.z - Width, 1};
+            a10 = {Lch.x,  Limit, Lch.z + Width, 1};
+            a11 = {Lch.x,  Limit, Lch.z - Width, 1};
+            b00 = {Lch.x, Lch.y + Width, 2 * Pi32, 1};
+            b01 = {Lch.x, Lch.y - Width, 2 * Pi32, 1};
+            b10 = {Lch.x, Lch.y + Width, 0, 1};
+            b11 = {Lch.x, Lch.y - Width, 0, 1};
+        }
+        else
+        {
+            r32 Width = Limit * Menu->a.Width / Menu->a.Height;
+            a00 = {Lch.x,  Limit, Lch.z + Width, 1};
+            a01 = {Lch.x, -Limit, Lch.z + Width, 1};
+            a10 = {Lch.x,  Limit, Lch.z - Width, 1};
+            a11 = {Lch.x, -Limit, Lch.z - Width, 1};
+            b00 = {Lch.x, Lch.y + Width, 0, 1};
+            b01 = {Lch.x, Lch.y + Width, 2 * Pi32, 1};
+            b10 = {Lch.x, Lch.y - Width, 0, 1};
+            b11 = {Lch.x, Lch.y - Width, 2 * Pi32, 1};
+        }
+        glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
+        glScissor(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
+        common_vertex Vertices[] =
+        {
+            {{ 1,  1, 0, 1}, { 0, 0}, a00},
+            {{ 1, -1, 0, 1}, { 0, 0}, a01},
+            {{-1,  1, 0, 1}, { 0, 0}, a10},
+            {{-1, -1, 0, 1}, { 0, 0}, a11},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        OpenGLProgramBegin(&OpenGL->LchDrawProgram);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+        OpenGLProgramEnd(&OpenGL->LchDrawProgram);
+        
+        glViewport(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
+        glScissor(Menu->b.x, Menu->b.y, Menu->b.Width, Menu->b.Height);
+        common_vertex Vertices2[] =
+        {
+            {{ 1,  1, 0, 1}, { 0, 0}, b00},
+            {{ 1, -1, 0, 1}, { 0, 0}, b01},
+            {{-1,  1, 0, 1}, { 0, 0}, b10},
+            {{-1, -1, 0, 1}, { 0, 0}, b11},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
+        OpenGLProgramBegin(&OpenGL->LchDrawProgram);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices2)/sizeof(*Vertices2)));
+        OpenGLProgramEnd(&OpenGL->LchDrawProgram);
+    }
 }
 
 internal void
 RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 {
-    u32 ColorMode = NewPen.ColorMode;
+    u32 Mode = NewPen.Mode;
     v2 OldP = OldPen.P;
     v2 NewP = NewPen.P;
     v2 OldV = {sinf(OldPen.Radians), cosf(OldPen.Radians)};
@@ -1338,7 +1349,7 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     NewV *= (0.5f * NewPen.Width);
     v4 OldColor = OldPen.Color;
     v4 NewColor = NewPen.Color;
-    if(ColorMode & COLOR_MODE_PRESSURE)
+    if(Mode & COLOR_MODE_PRESSURE)
     {
         OldColor.a *= OldPen.Pressure;
         NewColor.a *= NewPen.Pressure;
@@ -1367,15 +1378,15 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
         0, 0, 0, 1,};
     // TODO(Zyonji): Figure out how to implement the different alpha modes. Probably through the Transferprogram
     v4 BrushMode = {};
-    if(ColorMode & COLOR_MODE_LUMINANCE)
+    if(Mode & COLOR_MODE_LUMINANCE)
     {
         BrushMode.x = 1;
     }
-    if(ColorMode & COLOR_MODE_CHROMA)
+    if(Mode & COLOR_MODE_CHROMA)
     {
         BrushMode.y = 1;
     }
-    if(ColorMode & COLOR_MODE_ALPHA)
+    if(Mode & COLOR_MODE_ALPHA)
     {
         BrushMode.z = 1;
     }
@@ -1399,58 +1410,6 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     glBindTexture(GL_TEXTURE_2D, 0);
     OpenGLProgramEnd(&OpenGL->StaticTransferPixelsProgram);
 }
-#if 0
-internal void
-RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, v2 OldP, v2 NewP, v2 OldV, v2 NewV, v4 OldColor, v4 NewColor, r32 OldAliasDistance, r32 NewAliasDistance, u32 ColorMode)
-{
-    common_vertex Vertices[] =
-    {
-        {{NewP.x+NewV.x, NewP.y+NewV.y, 0, 1}, { 1, NewAliasDistance}, NewColor},
-        {{OldP.x+OldV.x, OldP.y+OldV.y, 0, 1}, { 1, OldAliasDistance}, OldColor},
-        {{NewP.x-NewV.x, NewP.y-NewV.y, 0, 1}, {-1, NewAliasDistance}, NewColor},
-        {{OldP.x-OldV.x, OldP.y-OldV.y, 0, 1}, {-1, OldAliasDistance}, OldColor},
-    };
-    
-    m4x4 Transform = {
-        (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
-        0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
-        0, 0, 1, 0, 
-        0, 0, 0, 1,};
-    // TODO(Zyonji): Figure out how to implement the different alpha modes. Probably through the Transferprogram
-    v4 BrushMode = {};
-    if(ColorMode & COLOR_MODE_LUMINANCE)
-    {
-        BrushMode.x = 1;
-    }
-    if(ColorMode & COLOR_MODE_CHROMA)
-    {
-        BrushMode.y = 1;
-    }
-    if(ColorMode & COLOR_MODE_ALPHA)
-    {
-        BrushMode.z = 1;
-    }
-    
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
-    glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-    glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode);
-    glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BrushModeProgram);
-    
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
-    OpenGLProgramBegin(&OpenGL->StaticTransferPixelsProgram, Transform);
-    glBindTexture(GL_TEXTURE_2D, OpenGL->SwapFramebuffer.ColorHandle);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    glBindTexture(GL_TEXTURE_2D, 0);
-    OpenGLProgramEnd(&OpenGL->StaticTransferPixelsProgram);
-}
-#endif
 
 internal void
 DrawTimer(u32area Area, v4 Color)
@@ -1538,13 +1497,6 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
     glBindTexture(GL_TEXTURE_2D, 0);
     OpenGLProgramEnd(&OpenGL->DisplayProgram);
     
-#if 0
-    glViewport(Cursor.x, Cursor.y, 10, 10);
-    glScissor(Cursor.x, Cursor.y, 10, 10);
-    glClearColor(0, 0, 0, 1.0);
-    glClear(GL_COLOR_BUFFER_BIT);
-#endif
-    
     u32area Area = Menu.Time;
     v4 Color;
     u32 Width;
@@ -1591,49 +1543,8 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
     SwapBuffers(wglGetCurrentDC());
 }
 
-internal r32
-LimitStreamDeltaMin(r32 NewDelta, r32 OldDelta)
-{
-    r32 Result;
-    if(OldDelta < 0)
-    {
-        if(NewDelta < OldDelta)
-            Result = Maximum(1.1f * OldDelta - 2, 0.1f * NewDelta);
-        else
-            Result = Minimum(0.9f * OldDelta + 2, 0.1f * NewDelta);
-    }
-    else
-    {
-        if(NewDelta > OldDelta)
-            Result = Minimum(1.01f * OldDelta + 2, 0.01f * NewDelta);
-        else
-            Result = Maximum(0.9f * OldDelta - 2, 0.1f * NewDelta);
-    }
-    return(Result);
-}
-internal r32
-LimitStreamDeltaMax(r32 NewDelta, r32 OldDelta)
-{
-    r32 Result;
-    if(OldDelta < 0)
-    {
-        if(NewDelta < OldDelta)
-            Result = Maximum(1.01f * OldDelta - 2, 0.01f * NewDelta);
-        else
-            Result = Minimum(0.9f * OldDelta + 2, 0.1f * NewDelta);
-    }
-    else
-    {
-        if(NewDelta > OldDelta)
-            Result = Minimum(1.1f * OldDelta + 2, 0.1f * NewDelta);
-        else
-            Result = Maximum(0.9f * OldDelta - 2, 0.1f * NewDelta);
-    }
-    return(Result);
-}
-
 internal void
-DisplayStreamFrame(open_gl *OpenGL, pen_target PenHistory, pen_target PenState, pen_target PenTarget, canvas_state Canvas)
+DisplayStreamFrame(open_gl *OpenGL, pen_target PenTarget, pen_target *PenHistory, u32 PenHistoryOffset,  u32 PenHistoryWindow, canvas_state Canvas)
 {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glViewport(0, 0, 1920, 1080);
@@ -1656,90 +1567,132 @@ DisplayStreamFrame(open_gl *OpenGL, pen_target PenHistory, pen_target PenState, 
             0, 1, 0, 0, 
             0, 0, 1, 0, 
             0, 0, 0, 1,};
-        // TODO(Zyonji): Fix this position.
         v2s Cursor = {
             (s32)((PenTarget.P.x / Canvas.Size.Width  + 0.5f) * Width), 
             (s32)((PenTarget.P.y / Canvas.Size.Height + 0.5f) * 1080)
         };
-        r32 HalfWidth = 0.5f * PenState.Width;
-        v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
+        r32 HalfWidth = 0.5f * PenTarget.Width;
+        v2 Normal = {sinf(PenTarget.Radians), cosf(PenTarget.Radians)};
         
-        OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, Canvas.Scale * HalfWidth, Normal);
+        OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, 1080.0f / (r32)Canvas.Size.Height * HalfWidth, Normal);
         glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
         glGenerateMipmap(GL_TEXTURE_2D);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glBindTexture(GL_TEXTURE_2D, 0);
         OpenGLProgramEnd(&OpenGL->DisplayProgram);
         
-        local_persist r32 MinXt = -1;
-        local_persist r32 MaxXt =  1;
-        local_persist r32 MinYt = -1;
-        local_persist r32 MaxYt =  1;
-        
-        local_persist r32 MinXp = -1;
-        local_persist r32 MaxXp =  1;
-        local_persist r32 MinYp = -1;
-        local_persist r32 MaxYp =  1;
-        
-        local_persist r32 MinXd =  0;
-        local_persist r32 MaxXd =  0;
-        local_persist r32 MinYd =  0;
-        local_persist r32 MaxYd =  0;
-        
         Width = 1920 - Width;
-        r32 MinX = 
-            Maximum(Minimum(Minimum(
-            PenHistory.P.x - PenHistory.Width, 
-            PenState.P.x - PenState.Width), 
-                            PenTarget.P.x - PenTarget.Width),  
-                    -0.5f * Canvas.Size.Width);
-        r32 MaxX = 
-            Minimum(Maximum(Maximum(
-            PenHistory.P.x + PenHistory.Width, 
-            PenState.P.x + PenState.Width), 
-                            PenTarget.P.x + PenTarget.Width),  
-                    0.5f * Canvas.Size.Width); 
-        r32 MinY =
-            Maximum(Minimum(Minimum(
-            PenHistory.P.y - PenHistory.Width, 
-            PenState.P.y - PenState.Width), 
-                            PenTarget.P.y - PenTarget.Width),  
-                    -0.5f * Canvas.Size.Height);
-        r32 MaxY = 
-            Minimum(Maximum(Maximum(
-            PenHistory.P.y + PenHistory.Width, 
-            PenState.P.y + PenState.Width), 
-                            PenTarget.P.y + PenTarget.Width),  
-                    0.5f * Canvas.Size.Height);
         
-        if(MinX < MinXt || MinX - 200 > 0.5f * MinXt + 0.5f * MaxXt)
-            MinXt = MinX - 200;
-        if(MaxX > MaxXt || MaxX + 200 < 0.5f * MaxXt + 0.5f * MinXt)
-            MaxXt = MaxX + 200;
-        if(MinY < MinYt || MinY - 200 > 0.5f * MinYt + 0.5f * MaxYt)
-            MinYt = MinY - 200;
-        if(MaxY > MaxYt || MaxY + 200 < 0.5f * MaxYt + 0.5f * MinYt)
-            MaxYt = MaxY + 200;
+        r32 MinX = PenTarget.P.x - PenTarget.Width;
+        r32 MaxX = PenTarget.P.x + PenTarget.Width;
+        r32 MinY = PenTarget.P.y - PenTarget.Width;
+        r32 MaxY = PenTarget.P.y + PenTarget.Width;
         
-        MinXd = LimitStreamDeltaMin(MinXt - MinXp, MinXd);
-        MaxXd = LimitStreamDeltaMax(MaxXt - MaxXp, MaxXd);
-        MinYd = LimitStreamDeltaMin(MinYt - MinYp, MinYd);
-        MaxYd = LimitStreamDeltaMax(MaxYt - MaxYp, MaxYd);
+        r32 AverageX = 0;
+        r32 AverageY = 0;
+        r32 WeightTotal = 0;
         
-        MinXp += MinXd;
-        MaxXp += MaxXd;
-        MinYp += MinYd;
-        MaxYp += MaxYd;
+        u32 WindowRadius = Maximum(PenHistoryOffset, PenHistoryWindow - PenHistoryOffset);
+        r32 RealRadius = (r32)WindowRadius;
+        for(u32 Offset = 0; Offset <= PenHistoryWindow; Offset++)
+        {
+            pen_target *Pen = PenHistory + Offset;
+            r32 NormOffset = fabsf(((r32)Offset - (r32)PenHistoryOffset) / RealRadius);
+            r32 Weight = 3*NormOffset*NormOffset - 2*NormOffset*NormOffset*NormOffset;
+            AverageX += (1 - Weight) * Pen->P.x;
+            AverageY += (1 - Weight) * Pen->P.y;
+            WeightTotal += (1 - Weight);
+        }
+        
+        AverageX = AverageX / WeightTotal;
+        AverageY = AverageY / WeightTotal;
+        
+        for(u32 Offset = 0; Offset <= PenHistoryWindow; Offset++)
+        {
+            pen_target *Pen = PenHistory + Offset;
+            r32 NormOffset = fabsf(((r32)Offset - (r32)PenHistoryOffset) / RealRadius);
+            r32 Weight = 3*NormOffset*NormOffset - 2*NormOffset*NormOffset*NormOffset;
+            
+            r32 Px = Weight * AverageX + (1 - Weight) * Pen->P.x;
+            r32 Py = Weight * AverageY + (1 - Weight) * Pen->P.y;
+            r32 LocalWidth = (1 - Weight) * Pen->Width;
+            MinX = Minimum(MinX, Px - LocalWidth);
+            MaxX = Maximum(MaxX, Px + LocalWidth);
+            MinY = Minimum(MinY, Py - LocalWidth);
+            MaxY = Maximum(MaxY, Py + LocalWidth);
+        }
+        
+        MinX -= 100;
+        MaxX += 100;
+        MinY -= 100;
+        MaxY += 100;
+        
+        r32 MarginX = Width - (MaxX - MinX);
+        if(MarginX > 0)
+        {
+            MinX -= MarginX / 2;
+            MaxX += MarginX / 2;
+        }
+        r32 MarginY = 1080.0f - (MaxY - MinY);
+        if(MarginY > 0)
+        {
+            MinY -= MarginY / 2;
+            MaxY += MarginY / 2;
+        }
+        
+        r32 LimitX = 0.5f * Canvas.Size.Width;
+        r32 LimitY = 0.5f * Canvas.Size.Height;
+        if( MinX < -LimitX)
+        {
+            MinX = -LimitX;
+        }
+        if( MaxX >  LimitX)
+        {
+            MaxX =  LimitX;
+        }
+        if( MinY < -LimitY)
+        {
+            MinY = -LimitY;
+        }
+        if( MaxY >  LimitY)
+        {
+            MaxY =  LimitY;
+        }
         
         v2 Scale = {1080.0f * (r32)Canvas.Size.Width / (r32)Width, (r32)Canvas.Size.Height};
-        r32 Zoom =  1.0f / Maximum(MaxXp - MinXp, MaxYp - MinYp);
+        r32 Zoom =  1.0f / Maximum((MaxX - MinX) * 1080.0f / (r32)Width, MaxY - MinY);
+        v2 Center = {(MinX + MaxX), (MinY + MaxY)};
         Scale *= Zoom;
+        if(Scale.x <= 1)
+        {
+            Center.x = 0;
+        }
+        else if(Zoom * (Canvas.Size.Width + Center.x) * 1080.0f / (r32)Width <= 1)
+        {
+            Center.x = 1 / (Zoom * 1080.0f / (r32)Width) - Canvas.Size.Width;
+        }
+        else if(Zoom * (Canvas.Size.Width - Center.x) * 1080.0f / (r32)Width <= 1)
+        {
+            Center.x = -1 / (Zoom * 1080.0f / (r32)Width) + Canvas.Size.Width;
+        }
+        if(Scale.y <= 1)
+        {
+            Center.y = 0;
+        }
+        else if(Zoom * (Canvas.Size.Height + Center.y) <= 1)
+        {
+            Center.y = 1 / Zoom - Canvas.Size.Height;
+        }
+        else if(Zoom * (Canvas.Size.Height - Center.y) <= 1)
+        {
+            Center.y = -1 / Zoom + Canvas.Size.Height;
+        }
         
         glViewport(1920 - Width, 0, Width, 1080);
         glScissor(1920 - Width, 0, Width, 1080);
         Transform = {
-            Scale.x, 0, 0, -(MinXp + MaxXp) * Zoom * 1080.0f / (r32)Width,
-            0, Scale.y, 0, -(MinYp + MaxYp) * Zoom,
+            Scale.x, 0, 0, -Center.x * Zoom * 1080.0f / (r32)Width,
+            0, Scale.y, 0, -Center.y * Zoom,
             0, 0, 1, 0, 
             0, 0, 0, 1,};
         OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);

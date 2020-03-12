@@ -181,6 +181,7 @@ LoadOpenGLFunctions()
     return true;
 }
 
+#include "orcahex_data.cpp"
 #include "opengl_orcahex.cpp"
 
 typedef UINT (WINAPI * type_WTInfoA) (UINT, UINT, LPVOID);
@@ -304,8 +305,27 @@ struct initial_state
     s32 WindowHeight;
     u32 MaxId;
     v4 Color;
-    u32 ColorMode;
+    u32 Mode;
     r32 Width;
+};
+
+// TODO(Zyonji): Use this structure to reduce the size of recording files.
+union record_chunk
+{
+    struct
+    {
+        r32 Pressure;
+        r32 Radians;
+        v2 P;
+    };
+    struct
+    {
+        r32 Ignored_;
+        r32 Width;
+        u32 Mode;
+        u32 Color;
+    };
+    r32 E[4];
 };
 
 global win32_orca_state *OrcaState;
@@ -528,6 +548,7 @@ InitOpenGL(open_gl *OpenGL, HDC WindowDC)
         
         OpenGL->Initialized = OpenGLInitPrograms(OpenGL);
         OpenGL->RenderingContext = OpenGLRC;
+        OpenGL->TilesetFramebuffer = CreateFramebuffer(OpenGL, TilesWidth, TilesHeight, TilesMemory);
     }
     else
     {
@@ -702,10 +723,73 @@ LoadImage(char* Filename, u32 MaxId)
         u32 MaxFileSize = sizeof(replay_header) +  10000000 * sizeof(pen_target);
         ReadFile(FileHandle, OrcaState->ReplayHeader, MaxFileSize, &BytesRead, 0);
         CloseHandle(FileHandle);
-        
+        // TODO(Zyonji): Reorganize this in case the file is an older version.
+#if 0
         OrcaState->ReplayCount = OrcaState->ReplayHeader->Count;
         OrcaState->NextReplay = OrcaState->ReplayBuffer + OrcaState->ReplayCount;
-        // TODO(Zyonji): Transfer the BaseFile as well, in case it's a continuation of a previous paintover.
+#endif
+        
+        // TODO(Zyonji): Fix this in the recording instead of the load.
+        u32 ReplayCount = OrcaState->ReplayHeader->Count;
+        r32 LastPressure = 0;
+        v2 LastP = {};
+        OrcaState->ReplayCount = 0;
+        OrcaState->NextReplay = OrcaState->ReplayBuffer;
+        while(OrcaState->ReplayCount < ReplayCount)
+        {
+            *OrcaState->NextReplay++;
+            OrcaState->ReplayCount++;
+            pen_target *Pen = OrcaState->NextReplay;
+            if(LastPressure == 0 && (2 * Pen->P.x  + Pen->Width * sinf(Pen->Radians) > Result.Width || 
+                                     -2 * Pen->P.x + Pen->Width * sinf(Pen->Radians) > Result.Width ||
+                                     2 * Pen->P.y  + Pen->Width * cosf(Pen->Radians) > Result.Height || 
+                                     -2 * Pen->P.y + Pen->Width * cosf(Pen->Radians) > Result.Height))
+            {
+                if(OrcaState->ReplayCount + 1 < ReplayCount)
+                {
+                    pen_target *NPen = OrcaState->NextReplay + 1;
+                    if(NPen->Pressure > 0)
+                    {
+                        if(2 * NPen->P.x  + NPen->Width * sinf(NPen->Radians) > Result.Width || 
+                           -2 * NPen->P.x + NPen->Width * sinf(NPen->Radians) > Result.Width ||
+                           2 * NPen->P.y  + NPen->Width * cosf(NPen->Radians) > Result.Height || 
+                           -2 * NPen->P.y + NPen->Width * cosf(NPen->Radians) > Result.Height)
+                        {
+                            if(OrcaState->ReplayCount + 2 < ReplayCount)
+                            {
+                                pen_target *NNPen = OrcaState->NextReplay + 2;
+                                if(2 * NNPen->P.x  + NNPen->Width * sinf(NNPen->Radians) > Result.Width || 
+                                   -2 * NNPen->P.x + NNPen->Width * sinf(NNPen->Radians) > Result.Width ||
+                                   2 * NNPen->P.y  + NNPen->Width * cosf(NNPen->Radians) > Result.Height || 
+                                   -2 * NNPen->P.y + NNPen->Width * cosf(NNPen->Radians) > Result.Height)
+                                {
+                                    Pen->P = LastP;
+                                }
+                                Pen->Pressure = 0;
+                            }
+                            else
+                            {
+                                Pen->Pressure = 0;
+                                Pen->P = LastP;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Pen->Pressure = 0;
+                        Pen->P = LastP;
+                    }
+                }
+                else
+                {
+                    Pen->Pressure = 0;
+                    Pen->P = LastP;
+                }
+            }
+            
+            LastP = Pen->P;
+            LastPressure = Pen->Pressure;
+        }
     }
     else
     {
@@ -769,6 +853,7 @@ SaveImage(image_data ImageData, u32 NewTime)
     HANDLE FileHandle = CreateFileA(FileName, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,0);
     if(FileHandle != INVALID_HANDLE_VALUE)
     {
+        // TODO(Zyonji): Pack the data more tightly.
         DWORD BytesWritten = 0;
         u32 FileSize = sizeof(replay_header) + OrcaState->ReplayCount * sizeof(pen_target);
         WriteFile(FileHandle, OrcaState->ReplayHeader, FileSize, &BytesWritten, 0);
@@ -781,7 +866,6 @@ SaveImage(image_data ImageData, u32 NewTime)
 internal void
 ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, v2u OutFrameSize)
 {
-    //Canvas->Seconds = ImageData.Minutes * 60;
     Canvas->StartingTime = GetFileTime();
     Canvas->SecondsIdle = -60 * ImageData.Minutes;
     Canvas->Size.Width = ImageData.Width;
@@ -807,25 +891,24 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
     u32 Block;
     u32 Gap;
     u32area TimeBorder;
-    u32area ColorBorder;
     u32area Pallet;
     if(Display->Size.Width > Display->Size.Height)
     {
         Menu->Size.Height = Display->Size.Height;
-        Block = 8 * (Menu->Size.Height / 320);
-        Gap = Block / 4;
+        Gap = Menu->Size.Height / 320;
+        Block = 8 * Gap;
         Menu->Block = Block;
         Menu->Gap = Gap;
-        Menu->Size.Width = Block * 4;
+        Menu->Size.Width = Block * 3 + Gap * 4;
         
         u32 Y = Menu->Size.Height - 2 * Gap - Block;
         Menu->New = {Gap, Y, Block, Block};
         Menu->Open = {2 * Gap + Block, Y, Block, Block};
         Menu->Save = {3 * Gap + 2 * Block, Y, Block, Block};
-        Y -= 3 * Gap;
-        Menu->Time = {0, Y, Block * 4, Gap};
-        TimeBorder = {0, Y - Gap / 2, Block * 4, 2 * Gap};
-        Y -= 2 * Gap + Block;
+        Y -= Gap + Block * 3 / 4;
+        Menu->Time = {0, Y + Block / 4, Menu->Size.Width, Block / 4};
+        TimeBorder = {0, Y, Menu->Size.Width, Block * 3 / 4};
+        Y -= Gap + Block;
         Menu->RotateR = {Gap, Y, Block, Block};
         Menu->OneToOne = {2 * Gap + Block, Y, Block, Block};
         Menu->RotateL = {3 * Gap + 2 * Block, Y, Block, Block};
@@ -837,46 +920,52 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->Small = {Gap, Y, Block, Block};
         Menu->Mirror = {2 * Gap + Block, Y, Block, Block};
         Menu->Big = {3 * Gap + 2 * Block, Y, Block, Block};
-        Y -= 4 * Gap + Block;
-        Menu->ColorA = {3 * Gap, Y, Gap + Block, Gap + Block};
-        Menu->ColorB = {4 * Gap + Block, Y, Gap + Block, Gap + Block};
-        ColorBorder = {2 * Gap, Y - Gap, 4 * Gap + 2 * Block, 3 * Gap + Block};
-        Y -= 5 * Gap + 3 * Block;
-        Pallet = {Gap, Y, 2 * Gap + 3 * Block, 2 * Gap + 3 * Block};
-        Y -= 3 * Gap;
+        Y -= Gap + Block / 2;
+        Menu->PenButtonsButton = {Gap, Y, Block / 2, Block / 2};
+        Menu->TiltButton = {2 * Gap + Block / 2, Y, Block / 2, Block / 2};
+        // TODO(Zyonji): Make a selct area and fill option.
+        Y -= Gap + Block;
+        Menu->ColorA = {2 * Gap + Block / 2, Y, Block, Block};
+        Menu->ColorB = {2 * Gap + Block * 3 / 2, Y, Block, Block};
+        Menu->ColorButtonA = {2 * Gap, Y, Block / 2, Block};
+        Menu->ColorButtonB = {2 * Gap + Block * 5 / 2, Y, Block / 2, Block};
+        Y -= 2 * Gap + 3 * Block;
+        Pallet = {2 * Gap, Y, 3 * Block, 3 * Block};
+        Y -= 2 * Gap;
         Menu->Steps = 12;
         Y -= Menu->Steps * Block;
-        Menu->Alpha = {3 * Gap, Y, Block, Block};
-        Menu->L = {Gap + 2 * Block, Y, Block, Block};
+        Menu->Alpha = {2 * Gap + Block / 4, Y, Block, Block};
+        Menu->L = {2 * Gap + Block* 7 / 4, Y, Block, Block};
         Menu->Offset = {0, (s32)Block};
-        Y -= 2 * Gap + Block;
-        Menu->AlphaButton = {3 * Gap, Y, Block, Block};
-        Menu->LButton = {Gap + 2 * Block, Y, Block, Block};
-        Y -= 2 * Gap + Block;
-        Menu->abButton = {2 * Gap + Block, Y, Block, Block};
-        Y -= 2 * Gap;
+        Y -= Block / 2;
+        Menu->AlphaButton = {2 * Gap + Block / 4, Y, Block, Block / 2};
+        Menu->LButton = {2 * Gap + Block* 7 / 4, Y, Block, Block / 2};
+        Y -= Gap + Block / 2;
+        Menu->abButton = {2 * Gap + Block / 2, Y, 2 * Block, Block / 2};
+        Menu->chButton = {Gap, Y, Block / 2, Block / 2};
+        Y -= 0;
         
         u32 Remainder = Y - 2 * Gap;
-        Menu->a = {Gap, Y - Remainder, 5 * Gap / 2 + Block, Remainder};
-        Menu->b = {Gap / 2 + 2 * Block, Y - Remainder, 5 * Gap / 2 + Block, Remainder};
+        Menu->a = {Gap, Y - Remainder, Block * 3 / 2, Remainder};
+        Menu->b = {3 * Gap + Block * 3 / 2, Y - Remainder, Block * 3 / 2, Remainder};
     }
     else
     {
         Menu->Size.Width = Display->Size.Width;
-        Block = 8 * (Menu->Size.Width / 320);
-        Gap = Block / 4;
+        Gap = Menu->Size.Width / 320;
+        Block = 8 * Gap;
         Menu->Block = Block;
         Menu->Gap = Gap;
-        Menu->Size.Height = Menu->Block * 4;
+        Menu->Size.Height = Block * 3 + Gap * 4;
         
         u32 X = 2 * Gap;
         Menu->New = {X, Gap, Block, Block};
         Menu->Open = {X, 2 * Gap + Block, Block, Block};
         Menu->Save = {X, 3 * Gap + 2 * Block, Block, Block};
-        X += Block + 2 * Gap;
-        Menu->Time = {X, 0, Gap, Block * 4};
-        TimeBorder = {X - Gap / 2, 0, 2 * Gap, Block * 4};
-        X += 3 * Gap;
+        X += Block + Gap;
+        Menu->Time = {X + Block / 4, 0, Block / 4, Menu->Size.Height};
+        TimeBorder = {X, 0, Block * 3 / 4, Menu->Size.Height};
+        X += Gap + Block * 3 / 4;
         Menu->Small = {X, Gap, Block, Block};
         Menu->Minus = {X, 2 * Gap + Block, Block, Block};
         Menu->RotateR = {X, 3 * Gap + 2 * Block, Block, Block};
@@ -888,30 +977,34 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->Big = {X, Gap, Block, Block};
         Menu->Plus = {X, 2 * Gap + Block, Block, Block};
         Menu->RotateL = {X, 3 * Gap + 2 * Block, Block, Block};
-        X += 3 * Gap + Block;
-        Menu->ColorA = {X, 3 * Gap, Gap + Block, Gap + Block};
-        Menu->ColorB = {X, 4 * Gap + Block, Gap + Block, Gap + Block};
-        ColorBorder = {X - Gap, 2 * Gap, 3 * Gap + Block, 4 * Gap + 2 * Block};
-        X += 4 * Gap + Block;
-        Pallet = {X, Gap, 2 * Gap + 3 * Block, 2 * Gap + 3 * Block};
-        X += 5 * Gap + 2 * Block;
+        X += Gap + Block;
+        Menu->PenButtonsButton = {X, Gap, Block / 2, Block / 2};
+        Menu->TiltButton = {X, 2 * Gap + Block / 2, Block / 2, Block / 2};
+        X += Gap + Block / 2;
+        Menu->ColorA = {X, 2 * Gap + Block / 2, Block, Block};
+        Menu->ColorB = {X, 2 * Gap + Block * 3 / 2, Block, Block};
+        Menu->ColorButtonA = {X, 2 * Gap, Block, Block / 2};
+        Menu->ColorButtonB = {X, 2 * Gap + Block * 5 / 2, Block, Block / 2};
+        X += 2 * Gap + Block;
+        Pallet = {X, 2 * Gap, 3 * Block, 3 * Block};
+        X += 2 * Gap + 2 * Block;
         Menu->Steps = 12;
         X += Menu->Steps * Block;
-        Menu->Alpha = {X, 3 * Gap, Block, Block};
-        Menu->L = {X, Gap + 2 * Block, Block, Block};
+        Menu->Alpha = {X, 2 * Gap + Block / 4, Block, Block};
+        Menu->L = {X, 2 * Gap + Block* 7 / 4, Block, Block};
         Menu->Offset = {-(s32)Block, 0};
-        X += 2 * Gap + Block;
-        Menu->AlphaButton = {X, 3 * Gap, Block, Block};
-        Menu->LButton = {X, Gap + 2 * Block, Block, Block};
-        X += 2 * Gap + Block;
-        Menu->abButton = {X, 2 * Gap + Block, Block, Block};
-        X += 2 * Gap + Block;
+        X += Block;
+        Menu->AlphaButton = {X, 2 * Gap + Block / 4, Block / 2, Block};
+        Menu->LButton = {X, 2 * Gap + Block* 7 / 4, Block / 2, Block};
+        X += Gap + Block / 2;
+        Menu->abButton = {X, 2 * Gap + Block / 2, Block / 2, 2 * Block};
+        Menu->chButton = {X, Gap, Block / 2, Block / 2};
+        X += Block / 2;
         
         u32 Remainder = Menu->Size.Width - X - 2 * Gap;
-        Menu->a = {X, Gap, Remainder, 5 * Gap / 2 + Block};
-        Menu->b = {X, Gap / 2 + 2 * Block, Remainder, 5 * Gap / 2 + Block};
+        Menu->a = {X, Gap, Remainder, Block * 3 / 2};
+        Menu->b = {X, 3 * Gap + Block * 3 / 2, Remainder, Block * 3 / 2};
     }
-    // TODO(Zyonji): Is this still required?
     Menu->Origin = {(r32)(Display->Size.Width / 2), (r32)(Display->Size.Height / 2)};
     
     if(OpenGL->MenuFramebuffer.FramebufferHandle)
@@ -926,11 +1019,9 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
     glScissor(0, 0, Menu->Size.Width, Menu->Size.Height);
     glClearColor(0.9, 0.9, 0.9, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    
     DrawButtonNew(OpenGL, Menu->New);
     DrawButtonOpen(OpenGL, Menu->Open);
     DrawButtonSave(OpenGL, Menu->Save);
-    DrawButton(TimeBorder);
     DrawButtonRotateR(OpenGL, Menu->RotateR);
     DrawButtonRotateL(OpenGL, Menu->RotateL);
     DrawButtonOneToOne(OpenGL, Menu->OneToOne);
@@ -940,20 +1031,8 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
     DrawButtonSmall(OpenGL, Menu->Small);
     DrawButtonBig(OpenGL, Menu->Big);
     DrawButtonMirror(OpenGL, Menu->Mirror);
-    DrawButton(ColorBorder);
-    DrawPallet(Pallet, Gap);
-    if(Display->Size.Width > Display->Size.Height)
-    {
-        DrawToggleTop(OpenGL, Menu->AlphaButton, Gap);
-        DrawToggleTop(OpenGL, Menu->LButton, Gap);
-        DrawToggleBottom(OpenGL, Menu->abButton, Gap);
-    }
-    else
-    {
-        DrawToggleLeft(OpenGL, Menu->AlphaButton, Gap);
-        DrawToggleLeft(OpenGL, Menu->LButton, Gap);
-        DrawToggleRight(OpenGL, Menu->abButton, Gap);
-    }
+    DrawPallet(Pallet);
+    DrawTimerBorder(OpenGL, TimeBorder);
 }
 
 internal v2
@@ -1094,7 +1173,6 @@ SAVE_EVERYTHING(SaveEverything)
                 OrcaState->MaxId = OrcaState->Image.Id + 1;
             }
             CreateBitmap(&OrcaState->OpenGL, &OrcaState->Image);
-            //u32 NewTime = (u32)(OrcaState->Canvas.Seconds / 60);
             u32 NewTime = (u32)(((GetFileTime() - OrcaState->Canvas.StartingTime) / 10000000
                                  - OrcaState->Canvas.SecondsIdle) / 60);
             if(SaveImage(OrcaState->Image, NewTime))
@@ -1119,7 +1197,7 @@ SAVE_EVERYTHING(SaveEverything)
         CurrentState.WindowHeight = OrcaState->WindowData.Size.Height;
         CurrentState.MaxId = OrcaState->MaxId;
         CurrentState.Color = OrcaState->Pen.Color;
-        CurrentState.ColorMode = OrcaState->Pen.ColorMode;
+        CurrentState.Mode = OrcaState->Pen.Mode;
         CurrentState.Width = OrcaState->Pen.Width;
         SaveInitialState(CurrentState, OrcaState->IniPath);
     }
@@ -1131,6 +1209,7 @@ CREATE_NEW_FILE(CreateNewFile)
     image_data ImageData = {};
     ImageData.Width = 4000;
     ImageData.Height = 6000;
+    
     ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, DisplaySize);
     FreeBitmap(&ImageData);
     OrcaState->Image = ImageData;
@@ -1184,6 +1263,107 @@ RENDER_BRUSH_STROKE(RenderBrushStroke)
     RenderBrushStroke(&OrcaState->OpenGL, Canvas, OldPen, NewPen);
 }
 
+internal void
+AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
+{
+    OrcaState->NextReplay = OrcaState->ReplayBuffer;
+    u32 ReplayCount = OrcaState->ReplayCount;
+    OrcaState->ReplayCount = 0;
+    u32 Count = 0;
+    
+    ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
+    if(*OrcaState->ReplayHeader->BaseFile)
+    {
+        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->Display.Size, OrcaState->MaxId);
+    }
+    else
+    {
+        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size);
+    }
+    
+    r32 SecondsElapsed;
+    r32 TargetSecondsPerFrame = 1.0f / 60.0f;
+    // NOTE(Zyonji): 15 minute long recordings.
+    u32 ReplaysPerFrame = ReplayCount / (60 * 60 * 15) + 1;
+    LARGE_INTEGER FrameStart;
+    LARGE_INTEGER CurrentCounter;
+    QueryPerformanceCounter(&FrameStart);
+    
+    while(OrcaState->ReplayCount < ReplayCount && *Alive)
+    {
+        *OrcaState->NextReplay++;
+        OrcaState->ReplayCount++;
+        Count++;
+        
+        ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
+        
+        if(Count >= ReplaysPerFrame)
+        {
+            UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
+            
+            MSG Message;
+            while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
+            {
+                if(Message.message == WM_QUIT)
+                {
+                    *Alive = false;
+                }
+                TranslateMessage(&Message);
+                DispatchMessageA(&Message);
+            }
+            
+            QueryPerformanceCounter(&CurrentCounter);
+            SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
+            
+            if(SecondsElapsed < TargetSecondsPerFrame)
+            {                        
+                if(SleepIsGranular)
+                {
+                    DWORD SleepMS = (DWORD)(1000.0f * (TargetSecondsPerFrame -
+                                                       SecondsElapsed));
+                    if(SleepMS > 0)
+                    {
+                        Sleep(SleepMS);
+                    }
+                }
+                
+                while(SecondsElapsed < TargetSecondsPerFrame)
+                {                            
+                    QueryPerformanceCounter(&CurrentCounter);
+                    SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
+                }
+            }
+            
+            QueryPerformanceCounter(&FrameStart);
+            
+            HDC WindowDC = GetDC(Window);
+            wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
+            DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
+            ReleaseDC(Window, WindowDC);
+            if(OrcaState->StreamWindow)
+            {
+                // TODO(Zyonji): Make this relative to the Replays per frame.
+                u32 PenHistoryOffset = Minimum(200 * ReplaysPerFrame, OrcaState->ReplayCount);
+                u32 PenHistoryWindow = PenHistoryOffset + 
+                    Minimum(200 * ReplaysPerFrame, ReplayCount - OrcaState->ReplayCount);
+                pen_target *PenHistory = OrcaState->NextReplay - PenHistoryOffset;
+                
+                HDC StreamDC = GetDC(OrcaState->StreamWindow);
+                wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
+                DisplayStreamFrame(&OrcaState->OpenGL, *OrcaState->NextReplay, PenHistory,
+                                   PenHistoryOffset, PenHistoryWindow, OrcaState->Canvas);
+                ReleaseDC(OrcaState->StreamWindow, StreamDC);
+            }
+            
+            Count = 0;
+        }
+    }
+    HDC WindowDC = GetDC(Window);
+    wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
+    RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
+    ReleaseDC(Window, WindowDC);
+}
+
 LRESULT CALLBACK
 MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 {
@@ -1224,7 +1404,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
             if(OrcaState->OpenGL.Initialized)
             {
                 UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
-                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.ColorMode);
+                OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
                 InvalidateRect(Window, 0, true);
             }
         }
@@ -1261,7 +1441,6 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 {
                     OrcaState->LastFrameTime = CurrentTime;
                     
-                    //u32 Minutes = (OrcaState->Canvas.Seconds / 60) - OrcaState->Image.Minutes;
                     u64 CurrentFileTime = GetFileTime();
                     u64 LastTime = OrcaState->Canvas.StartingTime;
                     u32 SecondsPassed = (u32)((CurrentFileTime - LastTime) / 10000000);
@@ -1273,12 +1452,12 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     ReleaseDC(Window, WindowDC);
                     if(OrcaState->StreamWindow)
                     {
-                        pen_target *PenHistory = OrcaState->NextReplay - Minimum(100, OrcaState->ReplayCount);
-                        pen_target *PenState = OrcaState->NextReplay - Minimum(1, OrcaState->ReplayCount);
+                        u32 PenHistoryWindow = Minimum(1000, OrcaState->ReplayCount);
+                        pen_target *PenHistory = OrcaState->NextReplay - PenHistoryWindow - 1;
                         
                         HDC StreamDC = GetDC(OrcaState->StreamWindow);
                         wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
-                        DisplayStreamFrame(&OrcaState->OpenGL, *PenHistory, *PenState, OrcaState->Pen, OrcaState->Canvas);
+                        DisplayStreamFrame(&OrcaState->OpenGL, OrcaState->Pen, PenHistory, PenHistoryWindow, PenHistoryWindow, OrcaState->Canvas);
                         ReleaseDC(OrcaState->StreamWindow, StreamDC);
                     }
                 }
@@ -1380,7 +1559,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     Pressure = (r32)Packet.pkNormalPressure / OrcaState->Map.PressureMax;
                 }
                 v4 Color = OrcaState->Pen.Color;
-                u32 ColorMode = OrcaState->Pen.ColorMode;
+                u32 Mode = OrcaState->Pen.Mode;
                 
                 u32 Seconds = SecondsPassed(&OrcaState->LastPenTime);
                 if(Seconds > 5)
@@ -1399,18 +1578,16 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 pen_target PenTarget = {};
                 PenTarget.P          = MapFrameToCanvas(Point, OrcaState->Canvas);
                 PenTarget.Pressure   = Pressure;
-                // TODO(Zyonji): Gotta mirror it when mirrored
                 PenTarget.Radians    = Radians;
                 PenTarget.Width      = Width;
                 PenTarget.Color      = Color;
-                PenTarget.ColorMode  = ColorMode;
+                PenTarget.Mode       = Mode;
                 
                 u32 Buttons = Packet.pkButtons;
                 b32 IsPenClose = (Packet.pkZ < 2 * OrcaState->Map.AxisMax.z / 3);
                 b32 FreshClick = (!OrcaState->Pen.IsDown && Packet.pkNormalPressure);
                 OrcaState->Pen.IsDown = Packet.pkNormalPressure;
                 
-                //if(ProcessBrushMove(OrcaState, OrcaState->Pen_, NewPenState, IsPenClose))
                 if(ProcessBrushMove(OrcaState, PenTarget, Point, Buttons, IsPenClose, FreshClick, true))
                 {
                     InvalidateRect(Window, 0, true);
@@ -1421,18 +1598,18 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
         } break;
         
         case WT_PACKETEXT:
-		{
-			PACKETEXT Packet = {};
-			if (gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet))
-			{
+        {
+            PACKETEXT Packet = {};
+            if (gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet))
+            {
                 // TODO(Zyonji): Figure out how to detect the 0 position package when lifting the finger.
                 if(Packet.pkTouchRing.nPosition)
                 {
                     SetRelativeBrushSize(&OrcaState->Pen, (r32)Packet.pkTouchRing.nPosition / OrcaState->Map.TouchRingMax);
                 }
             }
-		}
-		break;
+        }
+        break;
         
         default:
         {
@@ -1502,13 +1679,13 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                 InitialState.WindowWidth = 920;
                 InitialState.WindowHeight = 680;
                 InitialState.Color = {0.5f, 0.5f, 0.5f, 1.0f};
-                InitialState.ColorMode = COLOR_MODE_PRESSURE | COLOR_MODE_CHROMA | COLOR_MODE_LUMINANCE;
+                InitialState.Mode = COLOR_MODE_PRESSURE | COLOR_MODE_CHROMA | COLOR_MODE_LUMINANCE;
                 InitialState.Width = 16.0f;
                 InitialState.MaxId = 1;
             }
             OrcaState->MaxId = InitialState.MaxId;
             OrcaState->Pen.Color = InitialState.Color;
-            OrcaState->Pen.ColorMode = InitialState.ColorMode;
+            OrcaState->Pen.Mode = InitialState.Mode;
             OrcaState->Pen.NextWidth = InitialState.Width;
             OrcaState->WindowData.Pos.x = InitialState.WindowX;
             OrcaState->WindowData.Pos.y = InitialState.WindowY;
@@ -1542,11 +1719,10 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         OrcaState->SaveEverything = SaveEverything;
                         OrcaState->RenderBrushStroke = RenderBrushStroke;
                         
-                        // TODO(Zyonji): Move away from using an image file for the menu.
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);
                         UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
-                        UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.ColorMode);
+                        UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
                         
                         LARGE_INTEGER PerfCountFrequencyResult;
                         QueryPerformanceFrequency(&PerfCountFrequencyResult);
@@ -1577,97 +1753,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                                 if(ReplayModeChange)
                                 {
                                     ReplayModeChange = false;
-                                    
-                                    OrcaState->NextReplay = OrcaState->ReplayBuffer;
-                                    u32 ReplayCount = OrcaState->ReplayCount;
-                                    OrcaState->ReplayCount = 0;
-                                    u32 Count = 0;
-                                    
-                                    ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
-                                    if(*OrcaState->ReplayHeader->BaseFile)
-                                    {
-                                        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->Display.Size, OrcaState->MaxId);
-                                    }
-                                    else
-                                    {
-                                        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size);
-                                    }
-                                    
-                                    r32 SecondsElapsed;
-                                    r32 TargetSecondsPerFrame = 1.0f / 60.0f;
-                                    LARGE_INTEGER FrameStart;
-                                    LARGE_INTEGER CurrentCounter;
-                                    QueryPerformanceCounter(&FrameStart);
-                                    
-                                    
-                                    while(OrcaState->ReplayCount < ReplayCount && Alive)
-                                    {
-                                        *OrcaState->NextReplay++;
-                                        OrcaState->ReplayCount++;
-                                        Count++;
-                                        
-                                        ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
-                                        
-                                        if(Count >= 20)
-                                        {
-                                            while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
-                                            {
-                                                if(Message.message == WM_QUIT)
-                                                {
-                                                    Alive = false;
-                                                }
-                                                TranslateMessage(&Message);
-                                                DispatchMessageA(&Message);
-                                            }
-                                            
-                                            QueryPerformanceCounter(&CurrentCounter);
-                                            SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
-                                            
-                                            if(SecondsElapsed < TargetSecondsPerFrame)
-                                            {                        
-                                                if(SleepIsGranular)
-                                                {
-                                                    DWORD SleepMS = (DWORD)(1000.0f * (TargetSecondsPerFrame -
-                                                                                       SecondsElapsed));
-                                                    if(SleepMS > 0)
-                                                    {
-                                                        Sleep(SleepMS);
-                                                    }
-                                                }
-                                                
-                                                while(SecondsElapsed < TargetSecondsPerFrame)
-                                                {                            
-                                                    QueryPerformanceCounter(&CurrentCounter);
-                                                    SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
-                                                }
-                                            }
-                                            
-                                            QueryPerformanceCounter(&FrameStart);
-                                            
-                                            HDC WindowDC = GetDC(Window);
-                                            wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-                                            DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
-                                            ReleaseDC(Window, WindowDC);
-                                            if(OrcaState->StreamWindow)
-                                            {
-                                                pen_target *PenHistory = OrcaState->NextReplay - Minimum(100, OrcaState->ReplayCount);
-                                                pen_target *PenState = 
-                                                    OrcaState->NextReplay + Minimum(100, ReplayCount - OrcaState->ReplayCount);
-                                                
-                                                HDC StreamDC = GetDC(OrcaState->StreamWindow);
-                                                wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
-                                                DisplayStreamFrame(&OrcaState->OpenGL, *PenHistory, *PenState, 
-                                                                   *OrcaState->NextReplay, OrcaState->Canvas);
-                                                ReleaseDC(OrcaState->StreamWindow, StreamDC);
-                                            }
-                                            
-                                            Count = 0;
-                                        }
-                                    }
-                                    HDC WindowDC = GetDC(Window);
-                                    wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-                                    RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
-                                    ReleaseDC(Window, WindowDC);
+                                    AnimateReplay(Window, &Alive, SleepIsGranular);
                                 }
                             }
                             else

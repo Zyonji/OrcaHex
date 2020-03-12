@@ -1,7 +1,10 @@
-#define COLOR_MODE_LUMINANCE 0x1
-#define COLOR_MODE_CHROMA    0x2
-#define COLOR_MODE_ALPHA     0x4
-#define COLOR_MODE_PRESSURE  0x8
+#define COLOR_MODE_LUMINANCE     0x01
+#define COLOR_MODE_CHROMA        0x02
+#define COLOR_MODE_ALPHA         0x04
+#define COLOR_MODE_PRESSURE      0x08
+#define TILT_MODE_DISABLE        0x10
+#define PEN_BUTTON_MODE_FLIPPED  0x20
+#define MENU_MODE_AB             0x40
 
 struct display_state
 {
@@ -11,6 +14,7 @@ struct menu_state
 {
     v2u Size;
     v2 Origin;
+    b32 ABMode;
     
     u32 Block;
     u32 Gap;
@@ -29,8 +33,12 @@ struct menu_state
     u32area Small;
     u32area Big;
     u32area Mirror;
+    u32area TiltButton;
+    u32area PenButtonsButton;
     u32area ColorA;
     u32area ColorB;
+    u32area ColorButtonA;
+    u32area ColorButtonB;
     u32area Alpha;
     u32area L;
     u32area a;
@@ -38,6 +46,7 @@ struct menu_state
     u32area AlphaButton;
     u32area LButton;
     u32area abButton;
+    u32area chButton;
 };
 struct pen_base
 {
@@ -49,7 +58,7 @@ struct pen_base
 struct pen_target : pen_base
 {
     v4 Color;
-    u32 ColorMode;
+    u32 Mode;
 };
 struct pen_state : pen_target
 {
@@ -82,7 +91,6 @@ typedef SAVE_EVERYTHING(save_everything);
 #define LOAD_FILE(name) void name(canvas_state *Canvas, v2u DisplaySize, u32 MaxId)
 typedef LOAD_FILE(load_file);
 #define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
-//#define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, v2 OldP, v2 NewP, v2 OldV, v2 NewV, v4 OldColor, v4 NewColor, r32 OldAliasDistance, r32 NewAliasDistance, u32 ColorMode)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
 struct orca_state
 {
@@ -134,64 +142,8 @@ internal RENDER_BRUSH_STROKE(CPURenderBrushStroke)
     LogError("The undefined default brush stroke rendering function was used.", "OrcaHex");
 }
 
-// NOTE(Zyonji): I currently use 2.2 and 2.4 exponents as approximation.  This is mainly visible in the darker ranges.
-internal r32
-GetAFromRGB(v3 Lab, v3 RGB, r32 Value)
-{
-    r32 Result;
-    r64 CubicPart = (Value - RGB.y * pow(Lab.x, 3) - RGB.z * pow(Lab.x - Lab.z, 3)) / RGB.x;
-    r32 Sign = 1;
-    if(CubicPart < 0)
-    {
-        CubicPart = -CubicPart;
-        Sign = -1;
-    }
-    Result = Sign * (r32)pow(CubicPart, 1.0/3.0) - Lab.x;
-    return(Result);
-}
-internal v2
-GetALimits(v3 Lab)
-{
-    v2 Result;
-    r32 R0 = GetAFromRGB(Lab, {    78.0 /    29.0,   -37.0 /    29.0,   -12.0 /    29.0}, 0);
-    r32 R1 = GetAFromRGB(Lab, {    78.0 /    29.0,   -37.0 /    29.0,   -12.0 /    29.0}, 1);
-    r32 G0 = GetAFromRGB(Lab, { -2589.0 /  2533.0,  5011.0 /  2533.0,   111.0 /  2533.0}, 0);
-    r32 G1 = GetAFromRGB(Lab, { -2589.0 /  2533.0,  5011.0 /  2533.0,   111.0 /  2533.0}, 1);
-    r32 B0 = GetAFromRGB(Lab, {     3.0 /    49.0,   -11.0 /    49.0,    57.0 /    49.0}, 0);
-    r32 B1 = GetAFromRGB(Lab, {     3.0 /    49.0,   -11.0 /    49.0,    57.0 /    49.0}, 1);
-    Result.x = Maximum(Maximum(Minimum(R0, R1), Minimum(G0, G1)), Minimum(B0, B1));
-    Result.y = Minimum(Minimum(Maximum(R0, R1), Maximum(G0, G1)), Maximum(B0, B1));
-    return(Result);
-}
-internal r32
-GetBFromRGB(v3 Lab, v3 RGB, r32 Value)
-{
-    r32 Result;
-    r64 CubicPart = (Value - RGB.y * pow(Lab.x, 3) - RGB.x * pow(Lab.x + Lab.y, 3)) / RGB.z;
-    r32 Sign = 1;
-    if(CubicPart < 0)
-    {
-        CubicPart = -CubicPart;
-        Sign = -1;
-    }
-    Result =  Lab.x - Sign * (r32)pow(CubicPart, 1.0/3.0);
-    return(Result);
-}
-internal v2
-GetBLimits(v3 Lab)
-{
-    v2 Result;
-    r32 R0 = GetBFromRGB(Lab, {    78.0 /    29.0,   -37.0 /    29.0,   -12.0 /    29.0}, 0);
-    r32 R1 = GetBFromRGB(Lab, {    78.0 /    29.0,   -37.0 /    29.0,   -12.0 /    29.0}, 1);
-    r32 G0 = GetBFromRGB(Lab, { -2589.0 /  2533.0,  5011.0 /  2533.0,   111.0 /  2533.0}, 0);
-    r32 G1 = GetBFromRGB(Lab, { -2589.0 /  2533.0,  5011.0 /  2533.0,   111.0 /  2533.0}, 1);
-    r32 B0 = GetBFromRGB(Lab, {     3.0 /    49.0,   -11.0 /    49.0,    57.0 /    49.0}, 0);
-    r32 B1 = GetBFromRGB(Lab, {     3.0 /    49.0,   -11.0 /    49.0,    57.0 /    49.0}, 1);
-    Result.x = Maximum(Maximum(Minimum(R0, R1), Minimum(G0, G1)), Minimum(B0, B1));
-    Result.y = Minimum(Minimum(Maximum(R0, R1), Maximum(G0, G1)), Maximum(B0, B1));
-    return(Result);
-}
-
+#if 0
+// NOTE(Zyonji): This uses  2.2 and 2.4 exponents as approximation.  This is mainly visible in the darker ranges.
 internal v3
 ConvertRGBtoXYZ(v3 RGB)
 {
@@ -274,19 +226,107 @@ GetABLimits(v3 RGB)
     return(Result);
 }
 
-// TODO(Zyonji): Ensure that Grey includes no 0 or 1.
+#else
+
 internal v3
-ValidateRGB(v3 RGB, v3 Grey)
+ConvertRGBToLab(v3 RGB)
 {
-    v3 Result = RGB;
+    v3 Result;
+    
+    r64 r = RGB.r;
+    r64 g = RGB.g;
+    r64 b = RGB.b;
+    
+    r = (r > 0.04045) ? pow((r + 0.055) / 1.055, 2.4) : (r / 12.92);
+    g = (g > 0.04045) ? pow((g + 0.055) / 1.055, 2.4) : (g / 12.92);
+    b = (b > 0.04045) ? pow((b + 0.055) / 1.055, 2.4) : (b / 12.92);
+    
+    r64 x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+    r64 y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+    r64 z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+    
+    x = x / 0.95047;
+    y = y / 1.0000;
+    z = z / 1.08883;
+    
+    x = (x > 0.008856) ? pow(x, 1.0 / 3.0) : (7.787 * x + 0.160 / 1.160);
+    y = (y > 0.008856) ? pow(y, 1.0 / 3.0) : (7.787 * y + 0.160 / 1.160);
+    z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
+    
+    Result.x = (r32)((1.160 * y) - 0.160);
+    Result.y = (r32)(5.000 * (x - y));
+    Result.z = (r32)(2.000 * (y - z));
+    
+    return(Result);
+}
+internal v3
+ConvertLabToRGB(v3 Lab)
+{
+    v3 Result;
+    
+    r64 y = (Lab.x + 0.160) / 1.160;
+    r64 x = Lab.y / 5.000 + y;
+    r64 z = y - Lab.z / 2.000;
+    
+    r64 x3 = x * x * x;
+    r64 y3 = y * y * y;
+    r64 z3 = z * z * z;
+    
+    x = ((x3 > 0.008856) ? x3 : ((x - 0.160 / 1.160) / 7.787)) * 0.95047;
+    y = ((y3 > 0.008856) ? y3 : ((y - 0.160 / 1.160) / 7.787)) * 1.000;
+    z = ((z3 > 0.008856) ? z3 : ((z - 0.160 / 1.160) / 7.787)) * 1.08883;
+    
+    r64 r = x *  3.2404542 + y * -1.5371385 + z * -0.4985314;
+    r64 g = x * -0.9692660 + y *  1.8760108 + z *  0.0415560;
+    r64 b = x *  0.0556434 + y * -0.2040259 + z *  1.0572252;
+    
+    r = (r > 0.0031308) ? (1.055 * pow(r, 1 / 2.4) - 0.055) : (12.92 * r);
+    g = (g > 0.0031308) ? (1.055 * pow(g, 1 / 2.4) - 0.055) : (12.92 * g);
+    b = (b > 0.0031308) ? (1.055 * pow(b, 1 / 2.4) - 0.055) : (12.92 * b);
+    
+    Result.r = (r32)r;
+    Result.g = (r32)g;
+    Result.b = (r32)b;
+    
+    return(Result);
+}
+internal r32
+GetABLimit(v3 Lab)
+{
+    r32 Result = 1.35f;
+    return(Result);
+}
+#endif
+
+internal v3
+ValidatedRGBfromLab(v3 Lab)
+{
+    v3 Result;
+    
+    v3 RGB = ConvertLabToRGB(Lab);
+    v3 Grey = ConvertLabToRGB({Lab.x, 0, 0});
     v3 RGBVector = Grey - RGB;
     v3 ScaleA = {RGBVector.x / Grey.x, RGBVector.y / Grey.y, RGBVector.z / Grey.z};
     v3 ScaleB = {-RGBVector.x / (1 - Grey.x), -RGBVector.y / (1 - Grey.y), -RGBVector.z / (1 - Grey.z)};
     r32 Distance = Maximum(Maximum(Maximum(ScaleA.x, ScaleB.x), Maximum(ScaleA.y, ScaleB.y)), Maximum(ScaleA.z, ScaleB.z));
-    if(Distance > 1.0)
+    
+    if(Lab.x <= 0)
+    {
+        Result = {0, 0, 0};
+    }
+    else if(Lab.x >= 1)
+    {
+        Result = {1, 1, 1};
+    }
+    else if(Distance > 1.0)
     {
         Result = Grey - (RGBVector / Distance);
     }
+    else
+    {
+        Result = RGB;
+    }
+    
     return(Result);
 }
 
@@ -304,9 +344,9 @@ internal v2
 MapFrameToCanvas(v2 P, canvas_state Canvas)
 {
     v2 Result = {};
-    v2 Temp = P - Canvas.Center;
-    Result.x = Inner(Canvas.XMap, Temp) / Canvas.Scale;
-    Result.y = Inner(Canvas.YMap, Temp) / Canvas.Scale;
+    v2 Offset = P - Canvas.Center;
+    Result.x = Inner(Canvas.XMap, Offset) / Canvas.Scale;
+    Result.y = Inner(Canvas.YMap, Offset) / Canvas.Scale;
     return(Result);
 }
 
@@ -394,7 +434,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
         menu_state Menu = OrcaState->Menu;
         v2 P = {Point.x + OrcaState->Menu.Origin.x, Point.y + OrcaState->Menu.Origin.y};
         
-        if((0x2 & Buttons) && !(0x2 & PenState->Buttons))
+        if(((0x2 & Buttons) && !(0x2 & PenState->Buttons) && !(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)) || ((0x4 & Buttons) && !(0x4 & PenState->Buttons) &&  (PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)))
         {
             if(P.x >= Menu.Alpha.x + (Menu.Steps - 1) * Menu.Offset.x && P.x < Menu.Alpha.x + Menu.Alpha.Width&& P.y >= Menu.Alpha.y && P.y < Menu.Alpha.y + Menu.Alpha.Height + (Menu.Steps - 1) * Menu.Offset.y)
             {
@@ -410,7 +450,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
             {
                 PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
             }
-            OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+            OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
         }
         
         if(FreshClick)
@@ -464,30 +504,45 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
             {
                 RotateCanvas(&OrcaState->Canvas, -0.0625f * Pi32);
             }
-            else if(Inside(Menu.ColorA, P))
+            else if(Inside(Menu.TiltButton, P))
             {
-                PenTarget.ColorMode |= COLOR_MODE_PRESSURE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                PenTarget.Mode ^= TILT_MODE_DISABLE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
-            else if(Inside(Menu.ColorB, P))
+            else if(Inside(Menu.PenButtonsButton, P))
             {
-                PenTarget.ColorMode &= ~COLOR_MODE_PRESSURE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                PenTarget.Mode ^= PEN_BUTTON_MODE_FLIPPED;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
+            else if(Inside(Menu.ColorButtonA, P))
+            {
+                PenTarget.Mode |= COLOR_MODE_PRESSURE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
+            else if(Inside(Menu.ColorButtonB, P))
+            {
+                PenTarget.Mode &= ~COLOR_MODE_PRESSURE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
             else if(Inside(Menu.AlphaButton, P))
             {
-                PenTarget.ColorMode ^= COLOR_MODE_ALPHA;
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                PenTarget.Mode ^= COLOR_MODE_ALPHA;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
             else if(Inside(Menu.LButton, P))
             {
-                PenTarget.ColorMode ^= COLOR_MODE_LUMINANCE;
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                PenTarget.Mode ^= COLOR_MODE_LUMINANCE;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
             else if(Inside(Menu.abButton, P))
             {
-                PenTarget.ColorMode ^= COLOR_MODE_CHROMA;
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                PenTarget.Mode ^= COLOR_MODE_CHROMA;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
+            else if(Inside(Menu.chButton, P))
+            {
+                PenTarget.Mode ^= MENU_MODE_AB;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
         }
     }
@@ -498,18 +553,44 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
         r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
         if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
         {
-            if(0x2 & Buttons)
+            if(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)
             {
-                PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
-                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.ColorMode);
+                if(0x4 & Buttons)
+                {
+                    PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                    OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+                }
+                if(0x2 & Buttons)
+                {
+                    OrcaState->Canvas.Center += Point - PenState->Point;
+                }
             }
-            if(0x4 & Buttons)
+            else
             {
-                OrcaState->Canvas.Center += Point - PenState->Point;
+                if(0x2 & Buttons)
+                {
+                    PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                    OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+                }
+                if(0x4 & Buttons)
+                {
+                    OrcaState->Canvas.Center += Point - PenState->Point;
+                }
             }
         }
         
-        // TODO(Zyonji): Make sure the stroke doesn't cross up with itself by having the for corners of the stroke render make an hourglass shape.
+        if(PenTarget.Mode & TILT_MODE_DISABLE)
+        {
+            if(DeltaP.x || DeltaP.y)
+            {
+                PenTarget.Radians = -(r32)atan2(DeltaP.y, DeltaP.x);
+            }
+            else
+            {
+                PenTarget.Radians = PenState->Radians;
+            }
+        }
+        
         if((PenTarget.Pressure > 0 || PenState->Pressure > 0) && !(0x4 & Buttons) && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width)
         {
             if(OrcaState->ReplayCount < 10000000 && RecordReplay)
@@ -525,9 +606,6 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
                 OrcaState->ReplayCount++;
             }
             
-            //PenTarget.Radians = PenState->Radians;
-            
-            // TODO(Zyonji): Smooth things out and allow active turning.
             v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
             r32 MaximumRadiansDelta = fabsf(Inner(Normal, DeltaP)) / Maximum(OrcaState->Pen.Width, PenTarget.Width);
             r32 RadiansDelta = PenTarget.Radians - PenState->Radians;
@@ -538,6 +616,18 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
             else if(RadiansDelta < -Pi32)
             {
                 RadiansDelta += 2 * Pi32;
+            }
+            
+            if(PenTarget.Mode & TILT_MODE_DISABLE)
+            {
+                if(RadiansDelta > 0.5 * Pi32)
+                {
+                    RadiansDelta -= Pi32;
+                }
+                else if(RadiansDelta < -0.5 * Pi32)
+                {
+                    RadiansDelta += Pi32;
+                }
             }
             
             if( RadiansDelta < -MaximumRadiansDelta)
@@ -562,7 +652,6 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
             
             OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, PenTarget);
             
-            //v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
             if(Inner(DeltaP, Normal) * Inner(PenState->Delta.P, Normal) < 0)
             {
                 pen_target OffPen = *PenState;
@@ -589,7 +678,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
     PenState->Radians   = PenTarget.Radians;
     PenState->Width     = PenTarget.Width;
     PenState->Color     = PenTarget.Color;
-    PenState->ColorMode = PenTarget.ColorMode;
+    PenState->Mode      = PenTarget.Mode;
     
     return true;
 }
