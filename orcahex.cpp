@@ -5,6 +5,8 @@
 #define TILT_MODE_DISABLE        0x10
 #define PEN_BUTTON_MODE_FLIPPED  0x20
 #define MENU_MODE_AB             0x40
+#define PEN_MODE_AREA_FILL       0x80
+#define PEN_MODE_RESIZE          0x100
 
 struct display_state
 {
@@ -33,13 +35,16 @@ struct menu_state
     u32area Small;
     u32area Big;
     u32area Mirror;
-    u32area TiltButton;
-    u32area PenButtonsButton;
+    u32area PenButtonsToggle;
+    u32area TiltToggle;
+    u32area AreaFillToggle;
+    u32area ResizeToggle;
     u32area ColorA;
     u32area ColorB;
     u32area ColorButtonA;
     u32area ColorButtonB;
     u32area Alpha;
+    u32area LSmooth;
     u32area L;
     u32area a;
     u32area b;
@@ -64,6 +69,9 @@ struct pen_state : pen_target
 {
     pen_base Delta;
     v2 Point;
+    v2 Origin;
+    v2 Spread;
+    v4 Resize;
     r32 NextWidth;
     u32 Buttons;
     b32 IsDown;
@@ -84,14 +92,16 @@ struct canvas_state
 typedef PICK_COLOR(pick_color);
 #define UPDATE_MENU(name) void name(menu_state *Menu, v4 Color, u32 ColorMode)
 typedef UPDATE_MENU(update_menu);
-#define CREATE_NEW_FILE(name) void name(u32 MaxId, v2u DisplaySize)
+#define CREATE_NEW_FILE(name) void name(u32 MaxId, v2u OutFrameSize, u32 Width, u32 Height)
 typedef CREATE_NEW_FILE(create_new_file);
-#define SAVE_EVERYTHING(name) void name()
+#define SAVE_EVERYTHING(name) b32 name()
 typedef SAVE_EVERYTHING(save_everything);
-#define LOAD_FILE(name) void name(canvas_state *Canvas, v2u DisplaySize, u32 MaxId)
+#define LOAD_FILE(name) void name(canvas_state *Canvas, v2u OutFrameSize, u32 MaxId)
 typedef LOAD_FILE(load_file);
 #define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
+#define RENDER_AREA_FLIP(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen, v2 Origin, v2 Spread, v4 Color, u32 Step)
+typedef RENDER_AREA_FLIP(render_area_flip);
 struct orca_state
 {
     display_state Display;
@@ -110,6 +120,7 @@ struct orca_state
     save_everything *SaveEverything;
     load_file *LoadFile;
     render_brush_stroke *RenderBrushStroke;
+    render_area_flip *RenderAreaFlip;
 };
 
 // NOTE(Zyonji): Functions defined in the platform layer.
@@ -132,6 +143,7 @@ internal CREATE_NEW_FILE(CPUCreateNewFile)
 internal SAVE_EVERYTHING(CPUSaveEverything)
 {
     LogError("The undefined default saving function was used.", "OrcaHex");
+    return(false);
 }
 internal LOAD_FILE(CPULoadFile)
 {
@@ -140,6 +152,10 @@ internal LOAD_FILE(CPULoadFile)
 internal RENDER_BRUSH_STROKE(CPURenderBrushStroke)
 {
     LogError("The undefined default brush stroke rendering function was used.", "OrcaHex");
+}
+internal RENDER_AREA_FLIP(CPURenderAreaFlip)
+{
+    LogError("The undefined default area flip rendering function was used.", "OrcaHex");
 }
 
 #if 0
@@ -425,7 +441,7 @@ SetRelativeBrushSize(pen_state *Pen, r32 Factor)
 }
 
 internal b32 // NOTE(Zyonji): true if the the frame needs to be updated.
-ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 Buttons, b32 IsPenClose, b32 FreshClick, b32 RecordReplay)
+ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Buttons, b32 IsPenClose, b32 FreshClick, b32 RecordReplay)
 {
     pen_state *PenState = &OrcaState->Pen;
     
@@ -457,7 +473,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
         {
             if(Inside(Menu.New, P))
             {
-                OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size);
+                OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size, 4000, 6000);
             }
             else if(Inside(Menu.Open, P))
             {
@@ -504,14 +520,24 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
             {
                 RotateCanvas(&OrcaState->Canvas, -0.0625f * Pi32);
             }
-            else if(Inside(Menu.TiltButton, P))
+            else if(Inside(Menu.TiltToggle, P))
             {
                 PenTarget.Mode ^= TILT_MODE_DISABLE;
                 OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
-            else if(Inside(Menu.PenButtonsButton, P))
+            else if(Inside(Menu.PenButtonsToggle, P))
             {
                 PenTarget.Mode ^= PEN_BUTTON_MODE_FLIPPED;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
+            else if(Inside(Menu.AreaFillToggle, P))
+            {
+                PenTarget.Mode ^= PEN_MODE_AREA_FILL;
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
+            else if(Inside(Menu.ResizeToggle, P))
+            {
+                PenTarget.Mode ^= PEN_MODE_RESIZE;
                 OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
             else if(Inside(Menu.ColorButtonA, P))
@@ -606,63 +632,166 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point,  u32 But
                 OrcaState->ReplayCount++;
             }
             
-            v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
-            r32 MaximumRadiansDelta = fabsf(Inner(Normal, DeltaP)) / Maximum(OrcaState->Pen.Width, PenTarget.Width);
-            r32 RadiansDelta = PenTarget.Radians - PenState->Radians;
-            if(RadiansDelta > Pi32)
+            if((PenTarget.Mode & PEN_MODE_RESIZE) || (PenState->Mode & PEN_MODE_RESIZE))
             {
-                RadiansDelta -= 2 * Pi32;
-            }
-            else if(RadiansDelta < -Pi32)
-            {
-                RadiansDelta += 2 * Pi32;
-            }
-            
-            if(PenTarget.Mode & TILT_MODE_DISABLE)
-            {
-                if(RadiansDelta > 0.5 * Pi32)
+                local_persist u32 Edge = 0;
+                if(!(PenState->Mode & PEN_MODE_RESIZE))
                 {
-                    RadiansDelta -= Pi32;
+                    PenState->Resize = {};
                 }
-                else if(RadiansDelta < -0.5 * Pi32)
+                else if(PenTarget.Mode & PEN_MODE_RESIZE)
                 {
-                    RadiansDelta += Pi32;
+                    if(PenState->Pressure <= 0)
+                    {
+                        if(fabsf(PenTarget.P.x / OrcaState->Canvas.Size.Width) > fabsf(PenTarget.P.y / OrcaState->Canvas.Size.Height))
+                        {
+                            if(PenTarget.P.x > 0)
+                            {
+                                Edge = 1;
+                            }
+                            else
+                            {
+                                Edge = 3;
+                            }
+                        }
+                        else
+                        {
+                            if(PenTarget.P.y > 0)
+                            {
+                                Edge = 2;
+                            }
+                            else
+                            {
+                                Edge = 4;
+                            }
+                        }
+                    }
+                    else if(PenTarget.Pressure > 0)
+                    {
+                        switch(Edge)
+                        {
+                            case 1:
+                            {
+                                PenState->Resize.E[0] += DeltaP.x;
+                            } break;
+                            case 2:
+                            {
+                                PenState->Resize.E[1] += DeltaP.y;
+                            } break;
+                            case 3:
+                            {
+                                PenState->Resize.E[2] += DeltaP.x;
+                            } break;
+                            case 4:
+                            {
+                                PenState->Resize.E[3] += DeltaP.y;
+                            } break;
+                        }
+                    }
+                    else
+                    {
+                        Edge = 0;
+                    }
+                }
+                else
+                {
+                    // TODO(Zyonji): Resize the canvas.
+                    PenState->Resize = {};
                 }
             }
-            
-            if( RadiansDelta < -MaximumRadiansDelta)
-                RadiansDelta = -MaximumRadiansDelta;
-            if( RadiansDelta >  MaximumRadiansDelta)
-                RadiansDelta =  MaximumRadiansDelta;
-            
-            PenTarget.Radians = RadiansDelta + PenState->Radians;
-            while(PenTarget.Radians < 0)
-                PenTarget.Radians += 2 * Pi32;
-            while(PenTarget.Radians >= 2 * Pi32)
-                PenTarget.Radians -= 2 * Pi32;
-            
-            // TODO(Zyonji): Smooth out the corners of the width changes a bit.
-            r32 MaximumWidthDelta = Length(DeltaP);
-            r32 WidthDelta = PenTarget.Width - OrcaState->Pen.Width;
-            if( WidthDelta < -MaximumWidthDelta)
-                WidthDelta = -MaximumWidthDelta;
-            if( WidthDelta >  MaximumWidthDelta)
-                WidthDelta =  MaximumWidthDelta;
-            PenTarget.Width = WidthDelta + OrcaState->Pen.Width;
-            
-            OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, PenTarget);
-            
-            if(Inner(DeltaP, Normal) * Inner(PenState->Delta.P, Normal) < 0)
+            else if(PenTarget.Mode & PEN_MODE_AREA_FILL)
             {
-                pen_target OffPen = *PenState;
-                if(Inner(Normal, PenState->P - PenTarget.P) < 0)
+                local_persist v4 Color = {};
+                local_persist r32 MaxDistance = 0;
+                local_persist u32 Step = 0;
+                if(PenState->Pressure == 0)
                 {
-                    Normal = -Normal;
+                    PenState->Origin = PenState->P;
+                    PenState->Spread = {0, 0};
+                    Color = PenState->Color;
+                    MaxDistance = 0;
+                    Step = 0;
                 }
-                OffPen.P += Normal;
-                OffPen.Color.a = 0;
+                else
+                {
+                    if(PenTarget.Pressure == 0)
+                    {
+                        Step = 2;
+                    }
+                    else if(PenTarget.Mode & COLOR_MODE_PRESSURE)
+                    {
+                        r32 Distance = Length(PenTarget.P - PenState->Origin);
+                        if(Distance >= MaxDistance)
+                        {
+                            MaxDistance = Distance;
+                            Distance /= PenTarget.Pressure;
+                            PenState->Spread = {(r32)OrcaState->Canvas.Size.Width / Distance, (r32)OrcaState->Canvas.Size.Height / Distance};
+                        }
+                    }
+                    OrcaState->RenderAreaFlip(OrcaState->Canvas, *PenState, PenTarget, PenState->Origin, PenState->Spread, Color, Step);
+                    Step = 1;
+                }
+            }
+            else
+            {
+                v2 Normal = {cosf(PenState->Radians), -sinf(PenState->Radians)};
+                r32 MaximumRadiansDelta = fabsf(Inner(Normal, DeltaP)) / Maximum(OrcaState->Pen.Width, PenTarget.Width);
+                r32 RadiansDelta = PenTarget.Radians - PenState->Radians;
+                if(RadiansDelta > Pi32)
+                {
+                    RadiansDelta -= 2 * Pi32;
+                }
+                else if(RadiansDelta < -Pi32)
+                {
+                    RadiansDelta += 2 * Pi32;
+                }
                 
-                OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, OffPen);
+                if(PenTarget.Mode & TILT_MODE_DISABLE)
+                {
+                    if(RadiansDelta > 0.5 * Pi32)
+                    {
+                        RadiansDelta -= Pi32;
+                    }
+                    else if(RadiansDelta < -0.5 * Pi32)
+                    {
+                        RadiansDelta += Pi32;
+                    }
+                }
+                
+                if( RadiansDelta < -MaximumRadiansDelta)
+                    RadiansDelta = -MaximumRadiansDelta;
+                if( RadiansDelta >  MaximumRadiansDelta)
+                    RadiansDelta =  MaximumRadiansDelta;
+                
+                PenTarget.Radians = RadiansDelta + PenState->Radians;
+                while(PenTarget.Radians < 0)
+                    PenTarget.Radians += 2 * Pi32;
+                while(PenTarget.Radians >= 2 * Pi32)
+                    PenTarget.Radians -= 2 * Pi32;
+                
+                // TODO(Zyonji): Smooth out the corners of the width changes a bit.
+                r32 MaximumWidthDelta = Length(DeltaP);
+                r32 WidthDelta = PenTarget.Width - OrcaState->Pen.Width;
+                if( WidthDelta < -MaximumWidthDelta)
+                    WidthDelta = -MaximumWidthDelta;
+                if( WidthDelta >  MaximumWidthDelta)
+                    WidthDelta =  MaximumWidthDelta;
+                PenTarget.Width = WidthDelta + OrcaState->Pen.Width;
+                
+                OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, PenTarget);
+                
+                if(Inner(DeltaP, Normal) * Inner(PenState->Delta.P, Normal) < 0)
+                {
+                    pen_target OffPen = *PenState;
+                    if(Inner(Normal, PenState->P - PenTarget.P) < 0)
+                    {
+                        Normal = -Normal;
+                    }
+                    OffPen.P += Normal;
+                    OffPen.Color.a = 0;
+                    
+                    OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, OffPen);
+                }
             }
             OrcaState->Canvas.Hot = true;
         }

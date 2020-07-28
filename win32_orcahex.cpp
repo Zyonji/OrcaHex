@@ -73,6 +73,7 @@ typedef GLint WINAPI type_glGetUniformLocation(GLuint program, const GLchar *nam
 typedef void WINAPI type_glUniform1f(GLint location, GLfloat v0);
 typedef void WINAPI type_glUniform2fv(GLint location, GLsizei count, const GLfloat *value);
 typedef void WINAPI type_glUniform4fv(GLint location, GLsizei count, const GLfloat *value);
+typedef void WINAPI type_glUniform1i(GLint location, GLint v0);
 typedef void WINAPI type_glUniform2iv(GLint location, GLsizei count, const GLint *value);
 typedef void WINAPI type_glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 typedef void WINAPI type_glGenFramebuffers(GLsizei n, GLuint *framebuffers);
@@ -118,6 +119,7 @@ OpenGLGlobalFunction(glUniformMatrix4fv)
 OpenGLGlobalFunction(glUniform1f)
 OpenGLGlobalFunction(glUniform2fv)
 OpenGLGlobalFunction(glUniform4fv)
+OpenGLGlobalFunction(glUniform1i)
 OpenGLGlobalFunction(glUniform2iv)
 
 OpenGLGlobalFunction(glBindFramebuffer)
@@ -174,6 +176,7 @@ LoadOpenGLFunctions()
     Win32GetOpenGLFunction(glUniform1f);
     Win32GetOpenGLFunction(glUniform2fv);
     Win32GetOpenGLFunction(glUniform4fv);
+    Win32GetOpenGLFunction(glUniform1i);
     Win32GetOpenGLFunction(glUniform2iv);
     Win32GetOpenGLFunction(glBlendColor);
     Win32GetOpenGLFunction(glGenerateMipmap);
@@ -724,11 +727,10 @@ LoadImage(char* Filename, u32 MaxId)
         ReadFile(FileHandle, OrcaState->ReplayHeader, MaxFileSize, &BytesRead, 0);
         CloseHandle(FileHandle);
         // TODO(Zyonji): Reorganize this in case the file is an older version.
-#if 0
+#if 1
         OrcaState->ReplayCount = OrcaState->ReplayHeader->Count;
         OrcaState->NextReplay = OrcaState->ReplayBuffer + OrcaState->ReplayCount;
-#endif
-        
+#else
         // TODO(Zyonji): Fix this in the recording instead of the load.
         u32 ReplayCount = OrcaState->ReplayHeader->Count;
         r32 LastPressure = 0;
@@ -790,10 +792,13 @@ LoadImage(char* Filename, u32 MaxId)
             LastP = Pen->P;
             LastPressure = Pen->Pressure;
         }
+#endif
+        
     }
     else
     {
         At = Filename;
+        // TODO(Zyonji): This state change is not apparent when using this function.  I should return the ReplayHeader isntead of just setting it.
         To = OrcaState->ReplayHeader->BaseFile;
         while(*At)
         {
@@ -921,8 +926,10 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->Mirror = {2 * Gap + Block, Y, Block, Block};
         Menu->Big = {3 * Gap + 2 * Block, Y, Block, Block};
         Y -= Gap + Block / 2;
-        Menu->PenButtonsButton = {Gap, Y, Block / 2, Block / 2};
-        Menu->TiltButton = {2 * Gap + Block / 2, Y, Block / 2, Block / 2};
+        Menu->PenButtonsToggle = {Gap, Y, Block / 2, Block / 2};
+        Menu->TiltToggle = {2 * Gap + Block / 2, Y, Block / 2, Block / 2};
+        Menu->AreaFillToggle = {4 * Gap + Block, Y, Block / 2, Block / 2};
+        Menu->ResizeToggle = {5 * Gap + Block * 3 / 2, Y, Block / 2, Block / 2};
         // TODO(Zyonji): Make a selct area and fill option.
         Y -= Gap + Block;
         Menu->ColorA = {2 * Gap + Block / 2, Y, Block, Block};
@@ -935,6 +942,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->Steps = 12;
         Y -= Menu->Steps * Block;
         Menu->Alpha = {2 * Gap + Block / 4, Y, Block, Block};
+        Menu->LSmooth = {2 * Gap + Block* 6 / 4, Y, Block / 4, Menu->Steps * Block};
         Menu->L = {2 * Gap + Block* 7 / 4, Y, Block, Block};
         Menu->Offset = {0, (s32)Block};
         Y -= Block / 2;
@@ -978,8 +986,10 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->Plus = {X, 2 * Gap + Block, Block, Block};
         Menu->RotateL = {X, 3 * Gap + 2 * Block, Block, Block};
         X += Gap + Block;
-        Menu->PenButtonsButton = {X, Gap, Block / 2, Block / 2};
-        Menu->TiltButton = {X, 2 * Gap + Block / 2, Block / 2, Block / 2};
+        Menu->PenButtonsToggle = {X, Gap, Block / 2, Block / 2};
+        Menu->TiltToggle = {X, 2 * Gap + Block / 2, Block / 2, Block / 2};
+        Menu->AreaFillToggle = {X, 4 * Gap + Block, Block / 2, Block / 2};
+        Menu->ResizeToggle = {X, 5 * Gap + Block * 3 / 2, Block / 2, Block / 2};
         X += Gap + Block / 2;
         Menu->ColorA = {X, 2 * Gap + Block / 2, Block, Block};
         Menu->ColorB = {X, 2 * Gap + Block * 3 / 2, Block, Block};
@@ -989,9 +999,10 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Pallet = {X, 2 * Gap, 3 * Block, 3 * Block};
         X += 2 * Gap + 2 * Block;
         Menu->Steps = 12;
+        Menu->LSmooth = {X + Block, 2 * Gap + Block* 6 / 4, Menu->Steps * Block, Block / 4};
         X += Menu->Steps * Block;
         Menu->Alpha = {X, 2 * Gap + Block / 4, Block, Block};
-        Menu->L = {X, 2 * Gap + Block* 7 / 4, Block, Block};
+        Menu->L = {X, 2 * Gap + Block * 7 / 4, Block, Block};
         Menu->Offset = {-(s32)Block, 0};
         X += Block;
         Menu->AlphaButton = {X, 2 * Gap + Block / 4, Block / 2, Block};
@@ -1200,20 +1211,52 @@ SAVE_EVERYTHING(SaveEverything)
         CurrentState.Mode = OrcaState->Pen.Mode;
         CurrentState.Width = OrcaState->Pen.Width;
         SaveInitialState(CurrentState, OrcaState->IniPath);
+        
+        return(true);
+    }
+    else
+    {
+        return(false);
     }
 }
 
 // TODO(Zyonji): Considder a choice for canvas size.
 CREATE_NEW_FILE(CreateNewFile)
 {
-    image_data ImageData = {};
-    ImageData.Width = 4000;
-    ImageData.Height = 6000;
+    // TODO(Zyonji): That's a hot fix, because I just accidentally deleted a painting without warning.
+    b32 LoadNewCanvas = false;
+    if(OrcaState->Canvas.Hot)
+    {
+        s32 MessageBoxValue = MessageBox(OrcaState->Map.Window, "Save before starting new?", "New", MB_YESNOCANCEL | MB_DEFBUTTON1 | MB_APPLMODAL);
+        if(MessageBoxValue == IDYES)
+        {
+            LoadNewCanvas = OrcaState->SaveEverything();
+        }
+        if(MessageBoxValue == IDNO)
+        {
+            LoadNewCanvas = true;
+        }
+    }
+    else
+    {
+        LoadNewCanvas = true;
+    }
     
-    ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, DisplaySize);
-    FreeBitmap(&ImageData);
-    OrcaState->Image = ImageData;
-    OrcaState->Image.Id = MaxId;
+    if(LoadNewCanvas)
+    {
+        image_data ImageData = {};
+        ImageData.Width = Width;
+        ImageData.Height = Height;
+        
+        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OutFrameSize);
+        FreeBitmap(&ImageData);
+        OrcaState->Image = ImageData;
+        OrcaState->Image.Id = MaxId;
+        
+        OrcaState->ReplayCount = 0;
+        OrcaState->NextReplay = OrcaState->ReplayBuffer;
+        *OrcaState->ReplayHeader = {};
+    }
 }
 
 internal void
@@ -1238,7 +1281,7 @@ LOAD_FILE(LoadFile)
     RequestFileChoice(FileName, sizeof(FileName));
     if(*FileName)
     {
-        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, Canvas, FileName, DisplaySize, MaxId);
+        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, Canvas, FileName, OutFrameSize, MaxId);
     }
 }
 
@@ -1262,10 +1305,16 @@ RENDER_BRUSH_STROKE(RenderBrushStroke)
 {
     RenderBrushStroke(&OrcaState->OpenGL, Canvas, OldPen, NewPen);
 }
+RENDER_AREA_FLIP(RenderAreaFlip)
+{
+    RenderAreaFlip(&OrcaState->OpenGL, Canvas, OldPen, NewPen, Origin, Spread, Color, Step);
+}
 
 internal void
 AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
 {
+    ReplayModeChange = false;
+    
     OrcaState->NextReplay = OrcaState->ReplayBuffer;
     u32 ReplayCount = OrcaState->ReplayCount;
     OrcaState->ReplayCount = 0;
@@ -1278,7 +1327,7 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
     }
     else
     {
-        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size);
+        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size, OrcaState->Image.Width, OrcaState->Image.Height);
     }
     
     r32 SecondsElapsed;
@@ -1342,7 +1391,6 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
             ReleaseDC(Window, WindowDC);
             if(OrcaState->StreamWindow)
             {
-                // TODO(Zyonji): Make this relative to the Replays per frame.
                 u32 PenHistoryOffset = Minimum(200 * ReplaysPerFrame, OrcaState->ReplayCount);
                 u32 PenHistoryWindow = PenHistoryOffset + 
                     Minimum(200 * ReplaysPerFrame, ReplayCount - OrcaState->ReplayCount);
@@ -1350,12 +1398,18 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
                 
                 HDC StreamDC = GetDC(OrcaState->StreamWindow);
                 wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
-                DisplayStreamFrame(&OrcaState->OpenGL, *OrcaState->NextReplay, PenHistory,
+                DisplayStreamFrame(&OrcaState->OpenGL, OrcaState->Pen, PenHistory,
                                    PenHistoryOffset, PenHistoryWindow, OrcaState->Canvas);
                 ReleaseDC(OrcaState->StreamWindow, StreamDC);
             }
             
             Count = 0;
+        }
+        
+        if(ReplayModeChange && !OrcaState->NextReplay->Pressure)
+        {
+            ReplayModeChange = false;
+            break;
         }
     }
     HDC WindowDC = GetDC(Window);
@@ -1508,6 +1562,83 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     InvalidateRect(Window, 0, true);
                 } break;
                 
+                case VK_F1:
+                {
+                    OrcaState->OpenGL.TESTReferenceOverlay = !(OrcaState->OpenGL.TESTReferenceOverlay);
+                    InvalidateRect(Window, 0, true);
+                } break;
+                
+                case VK_F3:
+                {
+                    char FileName[MAX_PATH];
+                    RequestFileChoice(FileName, sizeof(FileName));
+                    if(*FileName)
+                    {
+                        FREE_IMAGE_FORMAT ImageFormat = FIF_UNKNOWN;
+                        ImageFormat = FreeImage_GetFileType(FileName, 0);
+                        if(ImageFormat == FIF_UNKNOWN)
+                        {
+                            ImageFormat= FreeImage_GetFIFFromFilename(FileName);
+                        }
+                        
+                        FIBITMAP *TempBitmap = 0;
+                        if(FreeImage_FIFSupportsReading(ImageFormat))
+                        {
+                            TempBitmap = FreeImage_Load(ImageFormat, FileName);
+                        }
+                        if(TempBitmap)
+                        {
+                            FIBITMAP *Bitmap = FreeImage_ConvertTo32Bits(TempBitmap);
+                            FreeImage_Unload(TempBitmap);
+                            
+                            if(Bitmap)
+                            {
+                                if(OrcaState->OpenGL.ReferenceFramebuffer.FramebufferHandle)
+                                {
+                                    FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
+                                }
+                                OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, FreeImage_GetWidth(Bitmap), FreeImage_GetHeight(Bitmap), FreeImage_GetBits(Bitmap));
+                                
+                                FreeImage_Unload(Bitmap);
+                            }
+                        }
+                        
+                        InvalidateRect(Window, 0, true);
+                    }
+                } break;
+                
+                case VK_F7:
+                {
+                    char FileName[MAX_PATH];
+                    RequestFileChoice(FileName, sizeof(FileName));
+                    if(*FileName)
+                    {
+                        image_data ImageReference = LoadImage(FileName, OrcaState->MaxId);
+                        image_data ImageData = {};
+                        if(ImageReference.Width > ImageReference.Height)
+                        {
+                            ImageData.Width = 6000;
+                            ImageData.Height = (u32)(6000.0f * (r32)ImageReference.Height / (r32)ImageReference.Width);
+                        }
+                        else
+                        {
+                            ImageData.Height = 6000;
+                            ImageData.Width = (u32)(6000.0f * (r32)ImageReference.Width / (r32)ImageReference.Height);
+                        }
+                        
+                        OrcaState->ReplayCount = 0;
+                        OrcaState->NextReplay = OrcaState->ReplayBuffer;
+                        *OrcaState->ReplayHeader = {};
+                        
+                        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OrcaState->Display.Size);
+                        FreeBitmap(&ImageData);
+                        OrcaState->Image = ImageData;
+                        OrcaState->Image.Id = OrcaState->MaxId;
+                        
+                        InvalidateRect(Window, 0, true);
+                    }
+                } break;
+                
                 case VK_F8:
                 {
                     ReplayModeChange = true;
@@ -1567,10 +1698,10 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     OrcaState->Canvas.SecondsIdle += Seconds;
                 }
 #if 0
-                //if(Seconds != 0)
+                if(Seconds != 0)
                 {
                     char Buffer[256];
-                    wsprintf(Buffer, "Time: %u\n", Packet.pkTime);
+                    wsprintf(Buffer, "Time: %u\n", Seconds);
                     OutputDebugStringA(Buffer);
                 }
 #endif
@@ -1648,6 +1779,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState->SaveEverything = CPUSaveEverything;
             OrcaState->LoadFile = LoadFile;
             OrcaState->RenderBrushStroke = CPURenderBrushStroke;
+            OrcaState->RenderAreaFlip = CPURenderAreaFlip;
             
             OrcaState->ReplayHeader = (replay_header *)((uint8 *)GeneralMemory + sizeof(win32_orca_state));
             OrcaState->ReplayBuffer = (pen_target *)((uint8 *)OrcaState->ReplayHeader + sizeof(replay_header));
@@ -1718,6 +1850,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         OrcaState->CreateNewFile = CreateNewFile;
                         OrcaState->SaveEverything = SaveEverything;
                         OrcaState->RenderBrushStroke = RenderBrushStroke;
+                        OrcaState->RenderAreaFlip = RenderAreaFlip;
                         
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);
@@ -1739,6 +1872,9 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                             LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, CommandLine, OrcaState->Display.Size, OrcaState->MaxId);
                         }
                         
+                        // NOTE(Zyonji): Initialize the LastPenTime.
+                        SecondsPassed(&OrcaState->LastPenTime);
+                        
                         // NOTE(Zyonji): The main Message loop.
                         b32 Alive = true;
                         for(;;)
@@ -1752,7 +1888,6 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                                 
                                 if(ReplayModeChange)
                                 {
-                                    ReplayModeChange = false;
                                     AnimateReplay(Window, &Alive, SleepIsGranular);
                                 }
                             }
