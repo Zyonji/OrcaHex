@@ -42,6 +42,7 @@ struct frame_buffer
 {
     GLuint FramebufferHandle;
     GLuint ColorHandle;
+    v2u Size;
 };
 struct open_gl
 {
@@ -948,6 +949,8 @@ CreateFramebuffer(open_gl *OpenGL, u32 Width, u32 Height, void *Memory)
 {
     frame_buffer Result = {};
     
+    Result.Size = {Width, Height};
+    
     glGenFramebuffers(1, &Result.FramebufferHandle);
     glBindFramebuffer(GL_FRAMEBUFFER, Result.FramebufferHandle);
     
@@ -1005,11 +1008,11 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
 }
 
 internal v4
-PickColor(open_gl *OpenGL, v2 P, v2u Size)
+PickColor(open_gl *OpenGL, v2 P)
 {
     v4 Result;
-    s32 PX = (s32)P.x + Size.Width / 2;
-    s32 PY = (s32)P.y + Size.Height / 2;
+    s32 PX = (s32)P.x + OpenGL->DisplayFramebuffer.Size.Width / 2;
+    s32 PY = (s32)P.y + OpenGL->DisplayFramebuffer.Size.Height / 2;
     glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->DisplayFramebuffer.FramebufferHandle);
     glReadPixels(PX, PY, 1, 1, GL_RGBA, GL_FLOAT, &Result);
     return(Result);
@@ -1693,77 +1696,83 @@ RenderCanvas(open_gl *OpenGL, canvas_state Canvas, m4x4 Transform, pen_state Pen
 }
 
 internal void
-DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, canvas_state Canvas, menu_state Menu, u32 Mintues)
+DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canvas_state Canvas, menu_state Menu, u32 Mintues)
 {
-    u32area CanvasRegion = {};
-    CanvasRegion = {0, 0, DisplayState.Size.Width, DisplayState.Size.Height};
-    
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->DisplayFramebuffer.FramebufferHandle);
-    glViewport(CanvasRegion.x, CanvasRegion.y, CanvasRegion.Width, CanvasRegion.Height);
-    glScissor(CanvasRegion.x, CanvasRegion.y, CanvasRegion.Width, CanvasRegion.Height);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+    glViewport(PaintingRegion.x, PaintingRegion.y, PaintingRegion.Width, PaintingRegion.Height);
+    glScissor(PaintingRegion.x, PaintingRegion.y, PaintingRegion.Width, PaintingRegion.Height);
     glClearColor(0.8, 0.8, 0.8, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
     
     m4x4 Transform;
     
+    // NOTE(Zyonji): Rendering the reference.
+    if(OpenGL->ReferenceFramebuffer.FramebufferHandle)
+    {
+        v2 Region = {(r32)PaintingRegion.Width, (r32)PaintingRegion.Height};
+        v2 Reference = {(r32)Canvas.ReferenceSize.Width, (r32)Canvas.ReferenceSize.Height};
+        v2 ReferenceScale ={};
+        
+        if(Region.x / Reference.x < Region.y / Reference.y)
+        {
+            ReferenceScale = {Reference.x / Region.x * Region.y / Reference.y, 1};
+        }
+        else
+        {
+            ReferenceScale = {1, Reference.y / Region.y * Region.x / Reference.x};
+        }
+        
+        v4 ReferenceLimits = {1, -1, 1, -1};
+        if(Canvas.Center.x > 0 && Canvas.Center.y > 0)
+        {
+            ReferenceLimits = {ReferenceScale.x - 1, -1, ReferenceScale.y - 1, -1};
+        }
+        else if(Canvas.Center.x > 0)
+        {
+            ReferenceLimits = {ReferenceScale.x - 1, -1, 1, 1 - ReferenceScale.y};
+        }
+        else if(Canvas.Center.y > 0)
+        {
+            ReferenceLimits = {1, 1 - ReferenceScale.x, ReferenceScale.y - 1, -1};
+        }
+        else
+        {
+            ReferenceLimits = {1, 1 - ReferenceScale.x, 1, 1 - ReferenceScale.y};
+        }
+        
+        common_vertex Vertices[] =
+        {
+            {{ReferenceLimits.Left,  ReferenceLimits.Top,    0, 1}, {0, 1}, {}},
+            {{ReferenceLimits.Left,  ReferenceLimits.Bottom, 0, 1}, {0, 0}, {}},
+            {{ReferenceLimits.Right, ReferenceLimits.Top,    0, 1}, {1, 1}, {}},
+            {{ReferenceLimits.Right, ReferenceLimits.Bottom, 0, 1}, {1, 0}, {}},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        
+        Transform = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0, 
+            0, 0, 0, 1,};
+        
+        OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->ReferenceFramebuffer.ColorHandle);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
+    }
+    
     // NOTE(Zyonji): Rendering the canvas.
     if(Canvas.Size.Height && Canvas.Size.Width)
     {
-        r32 M00 = Canvas.Scale * Canvas.XMap.x * (r32)Canvas.Size.Width / (r32)CanvasRegion.Width;
-        r32 M10 = Canvas.Scale * Canvas.XMap.y * (r32)Canvas.Size.Width / (r32)CanvasRegion.Height;
-        r32 M01 = Canvas.Scale * Canvas.YMap.x * (r32)Canvas.Size.Height / (r32)CanvasRegion.Width;
-        r32 M11 = Canvas.Scale * Canvas.YMap.y * (r32)Canvas.Size.Height / (r32)CanvasRegion.Height;
+        r32 M00 = Canvas.Scale * Canvas.XMap.x * (r32)Canvas.Size.Width / (r32)PaintingRegion.Width;
+        r32 M10 = Canvas.Scale * Canvas.XMap.y * (r32)Canvas.Size.Width / (r32)PaintingRegion.Height;
+        r32 M01 = Canvas.Scale * Canvas.YMap.x * (r32)Canvas.Size.Height / (r32)PaintingRegion.Width;
+        r32 M11 = Canvas.Scale * Canvas.YMap.y * (r32)Canvas.Size.Height / (r32)PaintingRegion.Height;
         
-        r32 MatrixOffsetX = (2 * roundf(Canvas.Center.x)) / CanvasRegion.Width;
-        r32 MatrixOffsetY = (2 * roundf(Canvas.Center.y)) / CanvasRegion.Height;
-        
-        if(OpenGL->ReferenceFramebuffer.FramebufferHandle)
-        {
-            v2 MenuOffset = {};
-            if(Menu.Size.Width > Menu.Size.Height)
-            {
-                MenuOffset = {0, 2 * (r32)Menu.Size.Height};
-            }
-            else
-            {
-                MenuOffset = {2 * (r32)Menu.Size.Width, 0};
-            }
-            
-            v2 ReferenceOffset = {};
-            if(MatrixOffsetX > 0 && MatrixOffsetY > 0)
-            {
-                ReferenceOffset.x = -1 + (Canvas.Scale * (r32)Canvas.Size.Width + MenuOffset.x) / (r32)CanvasRegion.Width;
-                ReferenceOffset.y = -1 + (Canvas.Scale * (r32)Canvas.Size.Height + MenuOffset.y) / (r32)CanvasRegion.Height;
-            }
-            else if(MatrixOffsetX > 0)
-            {
-                ReferenceOffset.x = -1 + (Canvas.Scale * (r32)Canvas.Size.Width + MenuOffset.x) / (r32)CanvasRegion.Width;
-                ReferenceOffset.y =  1 - Canvas.Scale * (r32)Canvas.Size.Height / (r32)CanvasRegion.Height;
-            }
-            else if(MatrixOffsetY > 0)
-            {
-                ReferenceOffset.x =  1 - Canvas.Scale * (r32)Canvas.Size.Width / (r32)CanvasRegion.Width;
-                ReferenceOffset.y = -1 + (Canvas.Scale * (r32)Canvas.Size.Height + MenuOffset.y) / (r32)CanvasRegion.Height;
-            }
-            else
-            {
-                ReferenceOffset.x =  1 - Canvas.Scale * (r32)Canvas.Size.Width / (r32)CanvasRegion.Width;
-                ReferenceOffset.y =  1 - Canvas.Scale * (r32)Canvas.Size.Height / (r32)CanvasRegion.Height;
-            }
-            
-            Transform = {
-                M00, M01, 0, ReferenceOffset.x,
-                M10, M11, 0, ReferenceOffset.y,
-                0, 0, 1, 0, 
-                0, 0, 0, 1,};
-            
-            OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
-            glBindTexture(GL_TEXTURE_2D, OpenGL->ReferenceFramebuffer.ColorHandle);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
-        }
+        r32 MatrixOffsetX = (2 * roundf(Canvas.Center.x)) / PaintingRegion.Width;
+        r32 MatrixOffsetY = (2 * roundf(Canvas.Center.y)) / PaintingRegion.Height;
         
         Transform = {
             M00, M01, 0, MatrixOffsetX,
@@ -1771,10 +1780,23 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
             0, 0, 1, 0, 
             0, 0, 0, 1,};
         
+        // TODO(Zyonji): Test moving the UV coordinates to implement the cropping tool.
+        common_vertex Vertices[] =
+        {
+            {{-1,  1, 0, 1}, {0, 1}, {}},
+            {{-1, -1, 0, 1}, {0, 0}, {}},
+            {{ 1,  1, 0, 1}, {1, 1}, {}},
+            {{ 1, -1, 0, 1}, {1, 0}, {}},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        
         glGenerateMipmap(GL_TEXTURE_2D);
         
         RenderCanvas(OpenGL, Canvas, Transform, PenState);
     }
+    
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
     
     // NOTE(Zyonji): Rendering the menu.
     v2u MenuOffset = {0, 0};
@@ -1792,14 +1814,14 @@ DisplayBuffer(open_gl *OpenGL, display_state DisplayState, pen_state PenState, c
     OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
     
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glViewport(0, 0, DisplayState.Size.Width, DisplayState.Size.Height);
-    glScissor(0, 0, DisplayState.Size.Width, DisplayState.Size.Height);
+    glViewport(0, 0, OpenGL->DisplayFramebuffer.Size.Width, OpenGL->DisplayFramebuffer.Size.Height);
+    glScissor(0, 0, OpenGL->DisplayFramebuffer.Size.Width, OpenGL->DisplayFramebuffer.Size.Height);
     Transform = {
         1, 0, 0, 0, 
         0, 1, 0, 0, 
         0, 0, 1, 0, 
         0, 0, 0, 1,};
-    v2s Cursor = {(s32)PenState.Point.x + (s32)DisplayState.Size.Width / 2, (s32)PenState.Point.y + (s32)DisplayState.Size.Height / 2};
+    v2s Cursor = {(s32)PenState.Point.x + (s32)OpenGL->DisplayFramebuffer.Size.Width / 2, (s32)PenState.Point.y + (s32)OpenGL->DisplayFramebuffer.Size.Height / 2};
     r32 HalfWidth = 0.5f * PenState.Width;
     v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
     if(Canvas.Mirrored)

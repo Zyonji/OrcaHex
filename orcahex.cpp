@@ -8,10 +8,6 @@
 #define PEN_MODE_AREA_FILL       0x80
 #define PEN_MODE_RESIZE          0x100
 
-struct display_state
-{
-    v2u Size;
-};
 struct menu_state
 {
     v2u Size;
@@ -79,6 +75,7 @@ struct pen_state : pen_target
 struct canvas_state
 {
     v2u Size;
+    v2u ReferenceSize;
     r32 Scale;
     v2 XMap;
     v2 YMap;
@@ -88,15 +85,15 @@ struct canvas_state
     u64 StartingTime;
     s32 SecondsIdle;
 };
-#define PICK_COLOR(name) v4 name(v2 P, v2u Size)
+#define PICK_COLOR(name) v4 name(v2 P)
 typedef PICK_COLOR(pick_color);
 #define UPDATE_MENU(name) void name(menu_state *Menu, v4 Color, u32 ColorMode)
 typedef UPDATE_MENU(update_menu);
-#define CREATE_NEW_FILE(name) void name(u32 MaxId, v2u OutFrameSize, u32 Width, u32 Height)
+#define CREATE_NEW_FILE(name) void name(u32 MaxId, u32area PaintingRegion, u32 Width, u32 Height)
 typedef CREATE_NEW_FILE(create_new_file);
 #define SAVE_EVERYTHING(name) b32 name()
 typedef SAVE_EVERYTHING(save_everything);
-#define LOAD_FILE(name) void name(canvas_state *Canvas, v2u OutFrameSize, u32 MaxId)
+#define LOAD_FILE(name) void name(canvas_state *Canvas, u32area PaintingRegion, u32 MaxId)
 typedef LOAD_FILE(load_file);
 #define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
@@ -104,7 +101,8 @@ typedef RENDER_BRUSH_STROKE(render_brush_stroke);
 typedef RENDER_AREA_FLIP(render_area_flip);
 struct orca_state
 {
-    display_state Display;
+    v2u DisplaySize;
+    u32area PaintingRegion;
     menu_state Menu;
     pen_state Pen;
     canvas_state Canvas;
@@ -347,9 +345,9 @@ ValidatedRGBfromLab(v3 Lab)
 }
 
 internal void
-ResetCanvasTransform(canvas_state *Canvas, v2u WindowSize)
+ResetCanvasTransform(canvas_state *Canvas, u32area PaintingRegion)
 {
-    Canvas->Scale = 1 / (r32)(Maximum(Canvas->Size.Width / WindowSize.Width, Canvas->Size.Height / WindowSize.Height) + 1);
+    Canvas->Scale = 1 / (r32)(Maximum(Canvas->Size.Width / PaintingRegion.Width, Canvas->Size.Height / PaintingRegion.Height) + 1);
     Canvas->XMap = {1, 0};
     Canvas->YMap = {0, 1};
     Canvas->Center = {0, 0};
@@ -357,10 +355,14 @@ ResetCanvasTransform(canvas_state *Canvas, v2u WindowSize)
 }
 
 internal v2
-MapFrameToCanvas(v2 P, canvas_state Canvas)
+MapFrameToCanvas(v2 P, v2u DisplaySize, u32area PaintingRegion, canvas_state Canvas)
 {
     v2 Result = {};
-    v2 Offset = P - Canvas.Center;
+    v2 PaintingRegionCenterOffset = {
+        0.5f * (r32)(DisplaySize.Width  - PaintingRegion.Width ), 
+        0.5f * (r32)(DisplaySize.Height - PaintingRegion.Height)
+    };
+    v2 Offset = P - PaintingRegionCenterOffset - Canvas.Center;
     Result.x = Inner(Canvas.XMap, Offset) / Canvas.Scale;
     Result.y = Inner(Canvas.YMap, Offset) / Canvas.Scale;
     return(Result);
@@ -464,7 +466,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             }
             else
             {
-                PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                PenTarget.Color = OrcaState->PickColor(Point);
             }
             OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
         }
@@ -473,11 +475,11 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         {
             if(Inside(Menu.New, P))
             {
-                OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size, 4000, 6000);
+                OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
             }
             else if(Inside(Menu.Open, P))
             {
-                OrcaState->LoadFile(&OrcaState->Canvas, OrcaState->Display.Size, OrcaState->MaxId);
+                OrcaState->LoadFile(&OrcaState->Canvas, OrcaState->PaintingRegion, OrcaState->MaxId);
             }
             else if(Inside(Menu.Save, P))
             {
@@ -501,7 +503,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             }
             else if(Inside(Menu.Reset, P))
             {
-                ResetCanvasTransform(&OrcaState->Canvas, OrcaState->Display.Size);
+                ResetCanvasTransform(&OrcaState->Canvas, OrcaState->PaintingRegion);
             }
             else if(Inside(Menu.Plus, P))
             {
@@ -583,7 +585,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             {
                 if(0x4 & Buttons)
                 {
-                    PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                    PenTarget.Color = OrcaState->PickColor(Point);
                     OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
                 }
                 if(0x2 & Buttons)
@@ -595,7 +597,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             {
                 if(0x2 & Buttons)
                 {
-                    PenTarget.Color = OrcaState->PickColor(Point, OrcaState->Display.Size);
+                    PenTarget.Color = OrcaState->PickColor(Point);
                     OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
                 }
                 if(0x4 & Buttons)

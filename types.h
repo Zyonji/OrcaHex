@@ -227,6 +227,13 @@ union v4
         r32 Ignored5_;
         v2 zw;
     };
+    struct
+    {
+        r32 Right;
+        r32 Left;
+        r32 Top;
+        r32 Bottom;
+    };
     r32 E[4];
 };
 

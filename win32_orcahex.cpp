@@ -869,42 +869,45 @@ SaveImage(image_data ImageData, u32 NewTime)
 }
 
 internal void
-ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, v2u OutFrameSize)
+ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, u32area PaintingRegion)
 {
     Canvas->StartingTime = GetFileTime();
     Canvas->SecondsIdle = -60 * ImageData.Minutes;
     Canvas->Size.Width = ImageData.Width;
     Canvas->Size.Height = ImageData.Height;
-    ResetCanvasTransform(Canvas, OutFrameSize);
+    ResetCanvasTransform(Canvas, PaintingRegion);
     
     ConvertImageToBuffer(OpenGL, ImageData.Memory, ImageData.Width, ImageData.Height, &OpenGL->CanvasFramebuffer, &OpenGL->SwapFramebuffer);
 }
 
 internal void
-UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, menu_state *Menu)
+UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *PaintingRegion, menu_state *Menu)
 {
     RECT ClientRect;
     GetClientRect(Window, &ClientRect);
-    Display->Size = {(u32)(ClientRect.right - ClientRect.left), (u32)(ClientRect.bottom - ClientRect.top)};
+    *DisplaySize = {(u32)(ClientRect.right - ClientRect.left), (u32)(ClientRect.bottom - ClientRect.top)};
     
     if(OpenGL->DisplayFramebuffer.FramebufferHandle)
     {
         FreeFramebuffer(&OpenGL->DisplayFramebuffer);
     }
-    OpenGL->DisplayFramebuffer = CreateFramebuffer(OpenGL, Display->Size.Width, Display->Size.Height, 0);
+    OpenGL->DisplayFramebuffer = CreateFramebuffer(OpenGL, DisplaySize->Width, DisplaySize->Height, 0);
     
     u32 Block;
     u32 Gap;
     u32area TimeBorder;
     u32area Pallet;
-    if(Display->Size.Width > Display->Size.Height)
+    if(DisplaySize->Width > DisplaySize->Height)
     {
-        Menu->Size.Height = Display->Size.Height;
+        Menu->Size.Height = DisplaySize->Height;
         Gap = Menu->Size.Height / 320;
         Block = 8 * Gap;
         Menu->Block = Block;
         Menu->Gap = Gap;
         Menu->Size.Width = Block * 3 + Gap * 4;
+        *PaintingRegion = {
+            Menu->Size.Width, 0, DisplaySize->Width - Menu->Size.Width, DisplaySize->Height
+        };
         
         u32 Y = Menu->Size.Height - 2 * Gap - Block;
         Menu->New = {Gap, Y, Block, Block};
@@ -959,12 +962,15 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
     }
     else
     {
-        Menu->Size.Width = Display->Size.Width;
+        Menu->Size.Width = DisplaySize->Width;
         Gap = Menu->Size.Width / 320;
         Block = 8 * Gap;
         Menu->Block = Block;
         Menu->Gap = Gap;
         Menu->Size.Height = Block * 3 + Gap * 4;
+        *PaintingRegion = {
+            0, Menu->Size.Height, DisplaySize->Width, DisplaySize->Height - Menu->Size.Height
+        };
         
         u32 X = 2 * Gap;
         Menu->New = {X, Gap, Block, Block};
@@ -1016,7 +1022,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, display_state *Display, men
         Menu->a = {X, Gap, Remainder, Block * 3 / 2};
         Menu->b = {X, 3 * Gap + Block * 3 / 2, Remainder, Block * 3 / 2};
     }
-    Menu->Origin = {(r32)(Display->Size.Width / 2), (r32)(Display->Size.Height / 2)};
+    Menu->Origin = {(r32)(DisplaySize->Width / 2), (r32)(DisplaySize->Height / 2)};
     
     if(OpenGL->MenuFramebuffer.FramebufferHandle)
     {
@@ -1248,7 +1254,7 @@ CREATE_NEW_FILE(CreateNewFile)
         ImageData.Width = Width;
         ImageData.Height = Height;
         
-        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OutFrameSize);
+        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, PaintingRegion);
         FreeBitmap(&ImageData);
         OrcaState->Image = ImageData;
         OrcaState->Image.Id = MaxId;
@@ -1260,12 +1266,12 @@ CREATE_NEW_FILE(CreateNewFile)
 }
 
 internal void
-LoadCanvas(open_gl *OpenGL, image_data *Image, canvas_state *Canvas, char* FileName, v2u OutFrameSize, u32 MaxId)
+LoadCanvas(open_gl *OpenGL, image_data *Image, canvas_state *Canvas, char* FileName, u32area PaintingRegion, u32 MaxId)
 {
     image_data ImageData = LoadImage(FileName, MaxId);
     if(ImageData.Bitmap)
     {
-        ChangeCanvas(OpenGL, ImageData, Canvas, OutFrameSize);
+        ChangeCanvas(OpenGL, ImageData, Canvas, PaintingRegion);
         FreeBitmap(&ImageData);
         *Image = ImageData;
     }
@@ -1281,7 +1287,7 @@ LOAD_FILE(LoadFile)
     RequestFileChoice(FileName, sizeof(FileName));
     if(*FileName)
     {
-        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, Canvas, FileName, OutFrameSize, MaxId);
+        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, Canvas, FileName, PaintingRegion, MaxId);
     }
 }
 
@@ -1295,7 +1301,7 @@ Win32GetSecondsElapsed(LARGE_INTEGER Start, LARGE_INTEGER End)
 
 PICK_COLOR(PickColor)
 {
-    return(PickColor(&OrcaState->OpenGL, P, Size));
+    return(PickColor(&OrcaState->OpenGL, P));
 }
 UPDATE_MENU(UpdateMenu)
 {
@@ -1323,11 +1329,11 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
     ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
     if(*OrcaState->ReplayHeader->BaseFile)
     {
-        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->Display.Size, OrcaState->MaxId);
+        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->PaintingRegion, OrcaState->MaxId);
     }
     else
     {
-        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->Display.Size, OrcaState->Image.Width, OrcaState->Image.Height);
+        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, OrcaState->Image.Width, OrcaState->Image.Height);
     }
     
     r32 SecondsElapsed;
@@ -1387,7 +1393,7 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
             
             HDC WindowDC = GetDC(Window);
             wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-            DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
+            DisplayBuffer(&OrcaState->OpenGL, OrcaState->PaintingRegion, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
             ReleaseDC(Window, WindowDC);
             if(OrcaState->StreamWindow)
             {
@@ -1457,7 +1463,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
         {
             if(OrcaState->OpenGL.Initialized)
             {
-                UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
+                UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->DisplaySize, &OrcaState->PaintingRegion, &OrcaState->Menu);
                 OrcaState->UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
                 InvalidateRect(Window, 0, true);
             }
@@ -1502,7 +1508,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     
                     HDC WindowDC = GetDC(Window);
                     wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-                    DisplayBuffer(&OrcaState->OpenGL, OrcaState->Display, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, Minutes);
+                    DisplayBuffer(&OrcaState->OpenGL, OrcaState->PaintingRegion, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, Minutes);
                     ReleaseDC(Window, WindowDC);
                     if(OrcaState->StreamWindow)
                     {
@@ -1593,11 +1599,13 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                             
                             if(Bitmap)
                             {
+                                OrcaState->Canvas.ReferenceSize = {FreeImage_GetWidth(Bitmap), FreeImage_GetHeight(Bitmap)};
+                                
                                 if(OrcaState->OpenGL.ReferenceFramebuffer.FramebufferHandle)
                                 {
                                     FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
                                 }
-                                OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, FreeImage_GetWidth(Bitmap), FreeImage_GetHeight(Bitmap), FreeImage_GetBits(Bitmap));
+                                OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, FreeImage_GetBits(Bitmap));
                                 
                                 FreeImage_Unload(Bitmap);
                             }
@@ -1630,7 +1638,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                         OrcaState->NextReplay = OrcaState->ReplayBuffer;
                         *OrcaState->ReplayHeader = {};
                         
-                        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OrcaState->Display.Size);
+                        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OrcaState->PaintingRegion);
                         FreeBitmap(&ImageData);
                         OrcaState->Image = ImageData;
                         OrcaState->Image.Id = OrcaState->MaxId;
@@ -1707,7 +1715,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 #endif
                 // TODO(Zyonji): Considder making it possible to change the width. Maybe with Packet.pkOrientation.orAltitude
                 pen_target PenTarget = {};
-                PenTarget.P          = MapFrameToCanvas(Point, OrcaState->Canvas);
+                PenTarget.P          = MapFrameToCanvas(Point, OrcaState->DisplaySize, OrcaState->PaintingRegion, OrcaState->Canvas);
                 PenTarget.Pressure   = Pressure;
                 PenTarget.Radians    = Radians;
                 PenTarget.Width      = Width;
@@ -1854,7 +1862,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);
-                        UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->Display, &OrcaState->Menu);
+                        UpdateDisplayFrameData(&OrcaState->OpenGL, Window, &OrcaState->DisplaySize, &OrcaState->PaintingRegion, &OrcaState->Menu);
                         UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
                         
                         LARGE_INTEGER PerfCountFrequencyResult;
@@ -1869,7 +1877,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         // TODO(Zyonji): This has some awkward load times at the start.  Look if I want to change that.
                         if(CommandLine && *CommandLine != '\0')
                         {
-                            LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, CommandLine, OrcaState->Display.Size, OrcaState->MaxId);
+                            LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, CommandLine, OrcaState->PaintingRegion, OrcaState->MaxId);
                         }
                         
                         // NOTE(Zyonji): Initialize the LastPenTime.
