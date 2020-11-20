@@ -276,21 +276,13 @@ struct image_data
     u32 Minutes;
 };
 
-struct replay_header
-{
-    u32 Version;
-    u32 Magic;
-    u32 Count;
-    char BaseFile[MAX_PATH];
-};
-
 struct win32_orca_state : orca_state
 {
     open_gl OpenGL;
     window_mapping Map;
     window_data WindowData;
     image_data Image;
-    replay_header *ReplayHeader;
+    //replay_header *ReplayHeader;
     HWND StreamWindow;
     b32 Active;
     s64 LastFrameTime;
@@ -312,27 +304,22 @@ struct initial_state
     r32 Width;
 };
 
-// TODO(Zyonji): Use this structure to reduce the size of recording files.
-union record_chunk
-{
-    struct
-    {
-        r32 Pressure;
-        r32 Radians;
-        v2 P;
-    };
-    struct
-    {
-        r32 Ignored_;
-        r32 Width;
-        u32 Mode;
-        u32 Color;
-    };
-    r32 E[4];
-};
-
 global win32_orca_state *OrcaState;
-global b32 ReplayModeChange;
+global b32 GlobalReplayModeChange;
+
+inline r32 
+Win32GetSecondsElapsed(LARGE_INTEGER Start, LARGE_INTEGER End)
+{
+    real32 Result = ((r32)(End.QuadPart - Start.QuadPart) /
+                     OrcaState->PerformanceFrequency);
+    return(Result);
+}
+
+internal image_data LoadImage(char* Filename, u32 MaxId);
+internal void ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, u32area PaintingRegion);
+internal void FreeBitmap(image_data *ImageData);
+
+#include "orcahex_replay.cpp"
 
 internal void
 LogError(char *Text, char *Caption)
@@ -413,6 +400,8 @@ InitWinTab(HWND Window, window_mapping *Map)
         return false;
     
     Tablet.lcOptions |= CXO_MESSAGES; //CXO_CSRMESSAGES for handling multiple cursors.
+    // TODO(Zyonji): Check how locking CXL_INSIZE works.
+    //Tablet.lcLock = CXL_INSIZE;
     Tablet.lcPktData = Tablet.lcMoveMask = PACKETDATA | TouchRingMask;
     Tablet.lcPktMode = PACKETMODE;
     Tablet.lcBtnUpMask = Tablet.lcBtnDnMask;
@@ -572,7 +561,6 @@ GetFileTime()
     Result = (((u64) FileTime.dwHighDateTime) << 32) | ((u64) FileTime.dwLowDateTime);
     return(Result);
 }
-
 internal u32
 SecondsPassed(u64 *LastTime)
 {
@@ -723,14 +711,15 @@ LoadImage(char* Filename, u32 MaxId)
     if(FileHandle != INVALID_HANDLE_VALUE)
     {
         DWORD BytesRead = 0;
-        u32 MaxFileSize = sizeof(replay_header) +  10000000 * sizeof(pen_target);
-        ReadFile(FileHandle, OrcaState->ReplayHeader, MaxFileSize, &BytesRead, 0);
+        u32 MaxFileSize = (17 + REPLAY_MAX * 2) * sizeof(replay_chunk);
+        LPVOID FileMemory = VirtualAlloc(0, MaxFileSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+        
+        ReadFile(FileHandle, FileMemory, MaxFileSize, &BytesRead, 0);
         CloseHandle(FileHandle);
+        UnpackReplay(&OrcaState->Replay, FileMemory, BytesRead);
+        VirtualFree(FileMemory, 0, MEM_RELEASE);
         // TODO(Zyonji): Reorganize this in case the file is an older version.
-#if 1
-        OrcaState->ReplayCount = OrcaState->ReplayHeader->Count;
-        OrcaState->NextReplay = OrcaState->ReplayBuffer + OrcaState->ReplayCount;
-#else
+#if 0
         // TODO(Zyonji): Fix this in the recording instead of the load.
         u32 ReplayCount = OrcaState->ReplayHeader->Count;
         r32 LastPressure = 0;
@@ -799,7 +788,7 @@ LoadImage(char* Filename, u32 MaxId)
     {
         At = Filename;
         // TODO(Zyonji): This state change is not apparent when using this function.  I should return the ReplayHeader isntead of just setting it.
-        To = OrcaState->ReplayHeader->BaseFile;
+        To = OrcaState->Replay.BaseFile;
         while(*At)
         {
             *To++ = *At++;
@@ -851,18 +840,19 @@ SaveImage(image_data ImageData, u32 NewTime)
     *--At = '6';
     *--At = 'o';
     
-    OrcaState->ReplayHeader->Version = 1;
-    OrcaState->ReplayHeader->Magic   = 0x6F3678;
-    OrcaState->ReplayHeader->Count   = OrcaState->ReplayCount;
-    
     HANDLE FileHandle = CreateFileA(FileName, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,0);
     if(FileHandle != INVALID_HANDLE_VALUE)
     {
+        u32 FileSize;
+        u32 MaxFileSize = (17 + REPLAY_MAX * 2) * sizeof(replay_chunk);
+        LPVOID FileMemory = VirtualAlloc(0, MaxFileSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+        
+        CompressReplay(&OrcaState->Replay, FileMemory, &FileSize);
         // TODO(Zyonji): Pack the data more tightly.
         DWORD BytesWritten = 0;
-        u32 FileSize = sizeof(replay_header) + OrcaState->ReplayCount * sizeof(pen_target);
-        WriteFile(FileHandle, OrcaState->ReplayHeader, FileSize, &BytesWritten, 0);
+        WriteFile(FileHandle, FileMemory, FileSize, &BytesWritten, 0);
         CloseHandle(FileHandle);
+        VirtualFree(FileMemory, 0, MEM_RELEASE);
     }
     
     return(Result);
@@ -1161,6 +1151,7 @@ LoadInitialState(char *Path)
     return(Result);
 }
 
+// TODO(Zyonji): Get memory and such on this tread and then do the processing and actual saving on another thread to not slow down painting.
 // TODO(Zyonji): Set the parameters to show the requirements of the function.  Maybe split this into multiple functions to make reading code easier.
 SAVE_EVERYTHING(SaveEverything)
 {
@@ -1183,12 +1174,14 @@ SAVE_EVERYTHING(SaveEverything)
     {
         RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
         
-        if(OrcaState->Image.Height && OrcaState->Image.Width)
+        if(OrcaState->Canvas.Size.Width && OrcaState->Canvas.Size.Height)
         {
             if(OrcaState->Image.Id >= OrcaState->MaxId)
             {
                 OrcaState->MaxId = OrcaState->Image.Id + 1;
             }
+            OrcaState->Image.Width = OrcaState->Canvas.Size.Width;
+            OrcaState->Image.Height = OrcaState->Canvas.Size.Height;
             CreateBitmap(&OrcaState->OpenGL, &OrcaState->Image);
             u32 NewTime = (u32)(((GetFileTime() - OrcaState->Canvas.StartingTime) / 10000000
                                  - OrcaState->Canvas.SecondsIdle) / 60);
@@ -1259,9 +1252,7 @@ CREATE_NEW_FILE(CreateNewFile)
         OrcaState->Image = ImageData;
         OrcaState->Image.Id = MaxId;
         
-        OrcaState->ReplayCount = 0;
-        OrcaState->NextReplay = OrcaState->ReplayBuffer;
-        *OrcaState->ReplayHeader = {};
+        ClearReplay(&OrcaState->Replay);
     }
 }
 
@@ -1291,12 +1282,9 @@ LOAD_FILE(LoadFile)
     }
 }
 
-inline r32 
-Win32GetSecondsElapsed(LARGE_INTEGER Start, LARGE_INTEGER End)
+RESIZE_CANVAS(ResizeCanvas)
 {
-    real32 Result = ((r32)(End.QuadPart - Start.QuadPart) /
-                     OrcaState->PerformanceFrequency);
-    return(Result);
+    ResizeCanvas(&OrcaState->OpenGL, Canvas, Resize, &OrcaState->OpenGL.CanvasFramebuffer, &OrcaState->OpenGL.SwapFramebuffer);
 }
 
 PICK_COLOR(PickColor)
@@ -1314,114 +1302,6 @@ RENDER_BRUSH_STROKE(RenderBrushStroke)
 RENDER_AREA_FLIP(RenderAreaFlip)
 {
     RenderAreaFlip(&OrcaState->OpenGL, Canvas, OldPen, NewPen, Origin, Spread, Color, Step);
-}
-
-internal void
-AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
-{
-    ReplayModeChange = false;
-    
-    OrcaState->NextReplay = OrcaState->ReplayBuffer;
-    u32 ReplayCount = OrcaState->ReplayCount;
-    OrcaState->ReplayCount = 0;
-    u32 Count = 0;
-    
-    ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
-    if(*OrcaState->ReplayHeader->BaseFile)
-    {
-        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, &OrcaState->Canvas, OrcaState->ReplayHeader->BaseFile, OrcaState->PaintingRegion, OrcaState->MaxId);
-    }
-    else
-    {
-        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, OrcaState->Image.Width, OrcaState->Image.Height);
-    }
-    
-    r32 SecondsElapsed;
-    r32 TargetSecondsPerFrame = 1.0f / 60.0f;
-    // NOTE(Zyonji): 15 minute long recordings.
-    u32 ReplaysPerFrame = ReplayCount / (60 * 60 * 15) + 1;
-    LARGE_INTEGER FrameStart;
-    LARGE_INTEGER CurrentCounter;
-    QueryPerformanceCounter(&FrameStart);
-    
-    while(OrcaState->ReplayCount < ReplayCount && *Alive)
-    {
-        *OrcaState->NextReplay++;
-        OrcaState->ReplayCount++;
-        Count++;
-        
-        ProcessBrushMove(OrcaState, *OrcaState->NextReplay, {0,0}, 0, 0, 0, false);
-        
-        if(Count >= ReplaysPerFrame)
-        {
-            UpdateMenu(&OrcaState->Menu, OrcaState->Pen.Color, OrcaState->Pen.Mode);
-            
-            MSG Message;
-            while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
-            {
-                if(Message.message == WM_QUIT)
-                {
-                    *Alive = false;
-                }
-                TranslateMessage(&Message);
-                DispatchMessageA(&Message);
-            }
-            
-            QueryPerformanceCounter(&CurrentCounter);
-            SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
-            
-            if(SecondsElapsed < TargetSecondsPerFrame)
-            {                        
-                if(SleepIsGranular)
-                {
-                    DWORD SleepMS = (DWORD)(1000.0f * (TargetSecondsPerFrame -
-                                                       SecondsElapsed));
-                    if(SleepMS > 0)
-                    {
-                        Sleep(SleepMS);
-                    }
-                }
-                
-                while(SecondsElapsed < TargetSecondsPerFrame)
-                {                            
-                    QueryPerformanceCounter(&CurrentCounter);
-                    SecondsElapsed = Win32GetSecondsElapsed(FrameStart, CurrentCounter);
-                }
-            }
-            
-            QueryPerformanceCounter(&FrameStart);
-            
-            HDC WindowDC = GetDC(Window);
-            wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-            DisplayBuffer(&OrcaState->OpenGL, OrcaState->PaintingRegion, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, 0);
-            ReleaseDC(Window, WindowDC);
-            if(OrcaState->StreamWindow)
-            {
-                u32 PenHistoryOffset = Minimum(200 * ReplaysPerFrame, OrcaState->ReplayCount);
-                u32 PenHistoryWindow = PenHistoryOffset + 
-                    Minimum(200 * ReplaysPerFrame, ReplayCount - OrcaState->ReplayCount);
-                pen_target *PenHistory = OrcaState->NextReplay - PenHistoryOffset;
-                
-                HDC StreamDC = GetDC(OrcaState->StreamWindow);
-                wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
-                DisplayStreamFrame(&OrcaState->OpenGL, OrcaState->Pen, PenHistory,
-                                   PenHistoryOffset, PenHistoryWindow, OrcaState->Canvas);
-                ReleaseDC(OrcaState->StreamWindow, StreamDC);
-            }
-            
-            Count = 0;
-        }
-        
-        if(ReplayModeChange && !OrcaState->NextReplay->Pressure)
-        {
-            ReplayModeChange = false;
-            break;
-        }
-    }
-    HDC WindowDC = GetDC(Window);
-    wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-    RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
-    ReleaseDC(Window, WindowDC);
 }
 
 LRESULT CALLBACK
@@ -1488,6 +1368,13 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
             }
         } break;
         
+#if 0
+        case WM_TIMER:
+        {
+            InvalidateRect(Window, 0, true);
+        } break;
+#endif
+        
         case WM_PAINT:
         {
             if(OrcaState->OpenGL.Initialized)
@@ -1504,16 +1391,25 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     u64 CurrentFileTime = GetFileTime();
                     u64 LastTime = OrcaState->Canvas.StartingTime;
                     u32 SecondsPassed = (u32)((CurrentFileTime - LastTime) / 10000000);
-                    u32 Minutes = (SecondsPassed - OrcaState->Canvas.SecondsIdle) / 60 - OrcaState->Image.Minutes;
+                    r32 TimerProgression= (((r32)(SecondsPassed - OrcaState->Canvas.SecondsIdle)) / 60.0f - ((r32)OrcaState->Image.Minutes)) / 30.0f;
+                    
+#if 0
+                    if(true)
+                    {
+                        char Buffer[256];
+                        wsprintf(Buffer, "Time: %I64u, Minutes %u\n", CurrentFileTime, (u32)(TimerProgression * 30));
+                        OutputDebugStringA(Buffer);
+                    }
+#endif
                     
                     HDC WindowDC = GetDC(Window);
                     wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
-                    DisplayBuffer(&OrcaState->OpenGL, OrcaState->PaintingRegion, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, Minutes);
+                    DisplayBuffer(&OrcaState->OpenGL, OrcaState->PaintingRegion, OrcaState->Pen, OrcaState->Canvas, OrcaState->Menu, TimerProgression);
                     ReleaseDC(Window, WindowDC);
                     if(OrcaState->StreamWindow)
                     {
-                        u32 PenHistoryWindow = Minimum(1000, OrcaState->ReplayCount);
-                        pen_target *PenHistory = OrcaState->NextReplay - PenHistoryWindow - 1;
+                        u32 PenHistoryWindow = Minimum(1000, OrcaState->Replay.Count);
+                        pen_target *PenHistory = OrcaState->Replay.Next - PenHistoryWindow - 1;
                         
                         HDC StreamDC = GetDC(OrcaState->StreamWindow);
                         wglMakeCurrent(StreamDC, OrcaState->OpenGL.RenderingContext);
@@ -1634,9 +1530,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                             ImageData.Width = (u32)(6000.0f * (r32)ImageReference.Width / (r32)ImageReference.Height);
                         }
                         
-                        OrcaState->ReplayCount = 0;
-                        OrcaState->NextReplay = OrcaState->ReplayBuffer;
-                        *OrcaState->ReplayHeader = {};
+                        ClearReplay(&OrcaState->Replay);
                         
                         ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, OrcaState->PaintingRegion);
                         FreeBitmap(&ImageData);
@@ -1649,7 +1543,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 
                 case VK_F8:
                 {
-                    ReplayModeChange = true;
+                    GlobalReplayModeChange = true;
                 } break;
                 case VK_F11:
                 {
@@ -1764,7 +1658,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
 {
     UINT DesiredSchedulerMS = 1;
     b32 SleepIsGranular = (timeBeginPeriod(DesiredSchedulerMS) == TIMERR_NOERROR);
-    ReplayModeChange = false;
+    GlobalReplayModeChange = false;
     
     WNDCLASS WindowClass = {};
     
@@ -1776,7 +1670,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
     
     if(RegisterClassA(&WindowClass))
     {
-        memory_index MemorySize = sizeof(win32_orca_state) + sizeof(replay_header) +  10000000 * sizeof(pen_target);
+        memory_index MemorySize = sizeof(win32_orca_state);
         umm GeneralMemory = (umm)VirtualAlloc(0, MemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
         if(GeneralMemory)
         {
@@ -1788,10 +1682,9 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState->LoadFile = LoadFile;
             OrcaState->RenderBrushStroke = CPURenderBrushStroke;
             OrcaState->RenderAreaFlip = CPURenderAreaFlip;
+            OrcaState->ResizeCanvas = CPUResizeCanvas;
             
-            OrcaState->ReplayHeader = (replay_header *)((uint8 *)GeneralMemory + sizeof(win32_orca_state));
-            OrcaState->ReplayBuffer = (pen_target *)((uint8 *)OrcaState->ReplayHeader + sizeof(replay_header));
-            OrcaState->NextReplay = OrcaState->ReplayBuffer;
+            InitReplay(&OrcaState->Replay);
             
             char *Path = OrcaState->IniPath;
             {
@@ -1859,6 +1752,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         OrcaState->SaveEverything = SaveEverything;
                         OrcaState->RenderBrushStroke = RenderBrushStroke;
                         OrcaState->RenderAreaFlip = RenderAreaFlip;
+                        OrcaState->ResizeCanvas = ResizeCanvas;
                         
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);
@@ -1883,6 +1777,11 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         // NOTE(Zyonji): Initialize the LastPenTime.
                         SecondsPassed(&OrcaState->LastPenTime);
                         
+#if 0
+                        SetTimer(Window, 1, 60000, (TIMERPROC) 0);
+                        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
+#endif
+                        
                         // NOTE(Zyonji): The main Message loop.
                         b32 Alive = true;
                         for(;;)
@@ -1894,7 +1793,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                                 TranslateMessage(&Message);
                                 DispatchMessageA(&Message);
                                 
-                                if(ReplayModeChange)
+                                if(GlobalReplayModeChange)
                                 {
                                     AnimateReplay(Window, &Alive, SleepIsGranular);
                                 }

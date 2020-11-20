@@ -1007,6 +1007,61 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
     }
 }
 
+internal void
+ResizeCanvas(open_gl *OpenGL, canvas_state *Canvas, resize_state Resize, frame_buffer *TargetBuffer, frame_buffer *SwapBuffer)
+{
+    Canvas->Size.Width += (s32)(Resize.Right - Resize.Left);
+    Canvas->Size.Height += (s32)(Resize.Top - Resize.Bottom);
+    
+    Canvas->Center.x += 0.5f * Canvas->Scale * (Resize.Right + Resize.Left);
+    Canvas->Center.y += 0.5f * Canvas->Scale * (Resize.Top + Resize.Bottom);
+    
+    frame_buffer NewTargetBuffer = CreateFramebuffer(OpenGL, Canvas->Size.Width, Canvas->Size.Height, 0);
+    frame_buffer NewSwapBuffer = CreateFramebuffer(OpenGL, Canvas->Size.Width, Canvas->Size.Height, 0);
+    
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, NewTargetBuffer.FramebufferHandle);
+    glViewport(0, 0, NewTargetBuffer.Size.Width, NewTargetBuffer.Size.Height);
+    glScissor(0, 0, NewTargetBuffer.Size.Width, NewTargetBuffer.Size.Height);
+    
+    m4x4 Transform = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    
+    r32 RShift = Resize.Right  / (r32)TargetBuffer->Size.Width;
+    r32 LShift = Resize.Left   / (r32)TargetBuffer->Size.Width;
+    r32 TShift = Resize.Top    / (r32)TargetBuffer->Size.Height;
+    r32 BShift = Resize.Bottom / (r32)TargetBuffer->Size.Height;
+    common_vertex Vertices[] =
+    {
+        {{-1,  1, 0, 1}, {0 + LShift, 1 + TShift}, {}},
+        {{-1, -1, 0, 1}, {0 + LShift, 0 + BShift}, {}},
+        {{ 1,  1, 0, 1}, {1 + RShift, 1 + TShift}, {}},
+        {{ 1, -1, 0, 1}, {1 + RShift, 0 + BShift}, {}},
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+    
+    glBindTexture(GL_TEXTURE_2D, TargetBuffer->ColorHandle);
+    OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    
+    if(TargetBuffer)
+    {
+        FreeFramebuffer(TargetBuffer);
+    }
+    if(SwapBuffer)
+    {
+        FreeFramebuffer(SwapBuffer);
+    }
+    
+    *TargetBuffer = NewTargetBuffer;
+    *SwapBuffer = NewSwapBuffer;
+}
+
 internal v4
 PickColor(open_gl *OpenGL, v2 P)
 {
@@ -1580,7 +1635,7 @@ RenderAreaFlip(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_targ
     OpenGLProgramBegin(&OpenGL->BasicDrawProgram, Transform);
     glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BrushModeProgram);
+    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
     
     glDisable(GL_BLEND);
     
@@ -1696,7 +1751,7 @@ RenderCanvas(open_gl *OpenGL, canvas_state Canvas, m4x4 Transform, pen_state Pen
 }
 
 internal void
-DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canvas_state Canvas, menu_state Menu, u32 Mintues)
+DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canvas_state Canvas, menu_state Menu, r32 TimerProgression)
 {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->DisplayFramebuffer.FramebufferHandle);
     glViewport(PaintingRegion.x, PaintingRegion.y, PaintingRegion.Width, PaintingRegion.Height);
@@ -1781,16 +1836,21 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
             0, 0, 0, 1,};
         
         // TODO(Zyonji): Test moving the UV coordinates to implement the cropping tool.
+        r32 RShift = PenState.Resize.Right  / (r32)Canvas.Size.Width;
+        r32 LShift = PenState.Resize.Left   / (r32)Canvas.Size.Width;
+        r32 TShift = PenState.Resize.Top    / (r32)Canvas.Size.Height;
+        r32 BShift = PenState.Resize.Bottom / (r32)Canvas.Size.Height;
         common_vertex Vertices[] =
         {
-            {{-1,  1, 0, 1}, {0, 1}, {}},
-            {{-1, -1, 0, 1}, {0, 0}, {}},
-            {{ 1,  1, 0, 1}, {1, 1}, {}},
-            {{ 1, -1, 0, 1}, {1, 0}, {}},
+            {{-1 + 2 * LShift,  1 + 2 * TShift, 0, 1}, {0 + LShift, 1 + TShift}, {}},
+            {{-1 + 2 * LShift, -1 + 2 * BShift, 0, 1}, {0 + LShift, 0 + BShift}, {}},
+            {{ 1 + 2 * RShift,  1 + 2 * TShift, 0, 1}, {1 + RShift, 1 + TShift}, {}},
+            {{ 1 + 2 * RShift, -1 + 2 * BShift, 0, 1}, {1 + RShift, 0 + BShift}, {}},
         };
         glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
         glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
         
+        // TODO(Zyonji): Why do I generate those here and in render canvas?
         glGenerateMipmap(GL_TEXTURE_2D);
         
         RenderCanvas(OpenGL, Canvas, Transform, PenState);
@@ -1836,44 +1896,44 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
     
     u32area Area = Menu.Time;
     v4 Color;
-    u32 Width;
-    if(Mintues > 120)
+    r32 Width;
+    if(TimerProgression > 4)
     {
         DrawTimer(Area, {0, 0, 0, 1});
         Width = 0;
         Color = {0, 0, 0, 1};
     }
-    else if(Mintues > 90)
+    else if(TimerProgression > 3)
     {
         DrawTimer(Area, {0, 1, 0, 1});
-        Width = Mintues * 2 - 180;
+        Width = TimerProgression - 3;
         Color = {0, 0, 0, 1};
     }
-    else if(Mintues > 60)
+    else if(TimerProgression > 2)
     {
         DrawTimer(Area, {1, 1, 0, 1});
-        Width = Mintues * 2 - 120;
+        Width = TimerProgression - 2;
         Color = {0, 1, 0, 1};
     }
-    else if(Mintues > 30)
+    else if(TimerProgression > 1)
     {
         DrawTimer(Area, {1, 0, 0, 1});
-        Width = Mintues * 2 - 60;
+        Width = TimerProgression - 1;
         Color = {1, 1, 0, 1};
     }
     else
     {
         DrawTimer(Area, {1, 1, 1, 1});
-        Width = Mintues * 2;
+        Width = TimerProgression;
         Color = {1, 0, 0, 1};
     }
     if(Area.Width > Area.Height)
     {
-        Area.Width = Width;
+        Area.Width = (u32)((r32)Area.Width * Width);
     }
     else
     {
-        Area.Height = Width;
+        Area.Height = (u32)((r32)Area.Height * Width);
     }
     DrawTimer(Area, Color);
     // TODO(Zyonji): Should I save the device context or should that be part of display buffer?
@@ -1920,11 +1980,6 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
         
         Width = 1920 - Width;
         
-        r32 MinX = PenState.P.x - PenState.Width;
-        r32 MaxX = PenState.P.x + PenState.Width;
-        r32 MinY = PenState.P.y - PenState.Width;
-        r32 MaxY = PenState.P.y + PenState.Width;
-        
         r32 AverageX = 0;
         r32 AverageY = 0;
         r32 WeightTotal = 0;
@@ -1943,6 +1998,19 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
         
         AverageX = AverageX / WeightTotal;
         AverageY = AverageY / WeightTotal;
+        
+#if 0
+        // NOTE(Zyonji): This includes the current pen position in the close view.
+        r32 MinX = PenState.P.x - PenState.Width;
+        r32 MaxX = PenState.P.x + PenState.Width;
+        r32 MinY = PenState.P.y - PenState.Width;
+        r32 MaxY = PenState.P.y + PenState.Width;
+#else
+        r32 MinX = AverageX - PenState.Width;
+        r32 MaxX = AverageX + PenState.Width;
+        r32 MinY = AverageY - PenState.Width;
+        r32 MaxY = AverageY + PenState.Width;
+#endif
         
         for(u32 Offset = 0; Offset <= PenHistoryWindow; Offset++)
         {
@@ -1997,7 +2065,16 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
         }
         
         v2 Scale = {1080.0f * (r32)Canvas.Size.Width / (r32)Width, (r32)Canvas.Size.Height};
-        r32 Zoom =  1.0f / Maximum((MaxX - MinX) * 1080.0f / (r32)Width, MaxY - MinY);
+        r32 NewZoom = 1.0f / Maximum((MaxX - MinX) * 1080.0f / (r32)Width, MaxY - MinY);
+        static r32 Zoom = NewZoom;
+        if(Zoom  > NewZoom)
+        {
+            Zoom = NewZoom;
+        }
+        else if(Zoom * 1.25f < NewZoom)
+        {
+            Zoom = NewZoom * 0.8f;
+        }
         v2 Center = {(MinX + MaxX), (MinY + MaxY)};
         Scale *= Zoom;
         if(Scale.x <= 1)

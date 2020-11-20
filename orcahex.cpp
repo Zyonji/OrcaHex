@@ -49,6 +49,15 @@ struct menu_state
     u32area abButton;
     u32area chButton;
 };
+struct resize_state
+{
+    r32 Right;
+    r32 Left;
+    r32 Top;
+    r32 Bottom;
+    u32 Edge;
+    b32 Active;
+};
 struct pen_base
 {
     v2 P;
@@ -67,10 +76,10 @@ struct pen_state : pen_target
     v2 Point;
     v2 Origin;
     v2 Spread;
-    v4 Resize;
     r32 NextWidth;
     u32 Buttons;
     b32 IsDown;
+    resize_state Resize;
 };
 struct canvas_state
 {
@@ -99,6 +108,11 @@ typedef LOAD_FILE(load_file);
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
 #define RENDER_AREA_FLIP(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen, v2 Origin, v2 Spread, v4 Color, u32 Step)
 typedef RENDER_AREA_FLIP(render_area_flip);
+#define RESIZE_CANVAS(name) void name(canvas_state *Canvas, resize_state Resize)
+typedef RESIZE_CANVAS(resize_canvas);
+
+#include "orcahex_replay.h"
+
 struct orca_state
 {
     v2u DisplaySize;
@@ -108,9 +122,13 @@ struct orca_state
     canvas_state Canvas;
     u32 MaxId;
     
+    replay_state Replay;
+    
+#if 0
     pen_target *ReplayBuffer;
     pen_target *NextReplay;
     u32 ReplayCount;
+#endif
     
     pick_color *PickColor;
     update_menu *UpdateMenu;
@@ -119,6 +137,7 @@ struct orca_state
     load_file *LoadFile;
     render_brush_stroke *RenderBrushStroke;
     render_area_flip *RenderAreaFlip;
+    resize_canvas *ResizeCanvas;
 };
 
 // NOTE(Zyonji): Functions defined in the platform layer.
@@ -154,6 +173,10 @@ internal RENDER_BRUSH_STROKE(CPURenderBrushStroke)
 internal RENDER_AREA_FLIP(CPURenderAreaFlip)
 {
     LogError("The undefined default area flip rendering function was used.", "OrcaHex");
+}
+internal RESIZE_CANVAS(CPUResizeCanvas)
+{
+    LogError("The undefined default resisize canvas function was used.", "OrcaHex");
 }
 
 #if 0
@@ -577,9 +600,10 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
     else
     {
         v2 DeltaP = PenTarget.P - PenState->P;
-        r32 CanvasEdgeX = (r32)OrcaState->Canvas.Size.Width / 2.0f;
-        r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
-        if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
+        //r32 CanvasEdgeX = (r32)OrcaState->Canvas.Size.Width / 2.0f;
+        //r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
+        //if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
+        if(IsPenClose) 
         {
             if(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)
             {
@@ -621,84 +645,81 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         
         if((PenTarget.Pressure > 0 || PenState->Pressure > 0) && !(0x4 & Buttons) && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width)
         {
-            if(OrcaState->ReplayCount < 10000000 && RecordReplay)
+            if(OrcaState->Replay.Count < REPLAY_MAX - 1 && RecordReplay)
             {
                 if(PenState->Pressure <= 0)
                 {
-                    *OrcaState->NextReplay = *PenState;
-                    OrcaState->NextReplay++;
-                    OrcaState->ReplayCount++;
+                    *OrcaState->Replay.Next = *PenState;
+                    OrcaState->Replay.Next++;
+                    OrcaState->Replay.Count++;
                 }
-                *OrcaState->NextReplay = PenTarget;
-                OrcaState->NextReplay++;
-                OrcaState->ReplayCount++;
+                *OrcaState->Replay.Next = PenTarget;
+                OrcaState->Replay.Next++;
+                OrcaState->Replay.Count++;
             }
             
-            if((PenTarget.Mode & PEN_MODE_RESIZE) || (PenState->Mode & PEN_MODE_RESIZE))
+            if((!(PenTarget.Mode & PEN_MODE_RESIZE)) && PenState->Resize.Active)
             {
-                local_persist u32 Edge = 0;
-                if(!(PenState->Mode & PEN_MODE_RESIZE))
+                OrcaState->ResizeCanvas(&OrcaState->Canvas, PenState->Resize);
+                PenState->Resize = {};
+            }
+            if(PenTarget.Mode & PEN_MODE_RESIZE)
+            {
+                if(!PenState->Resize.Active)
                 {
                     PenState->Resize = {};
+                    PenState->Resize.Active = true;
                 }
-                else if(PenTarget.Mode & PEN_MODE_RESIZE)
+                if(PenState->Pressure <= 0)
                 {
-                    if(PenState->Pressure <= 0)
+                    if(fabsf(PenTarget.P.x / OrcaState->Canvas.Size.Width) > fabsf(PenTarget.P.y / OrcaState->Canvas.Size.Height))
                     {
-                        if(fabsf(PenTarget.P.x / OrcaState->Canvas.Size.Width) > fabsf(PenTarget.P.y / OrcaState->Canvas.Size.Height))
+                        if(PenTarget.P.x > 0)
                         {
-                            if(PenTarget.P.x > 0)
-                            {
-                                Edge = 1;
-                            }
-                            else
-                            {
-                                Edge = 3;
-                            }
+                            PenState->Resize.Edge = 1;
                         }
                         else
                         {
-                            if(PenTarget.P.y > 0)
-                            {
-                                Edge = 2;
-                            }
-                            else
-                            {
-                                Edge = 4;
-                            }
-                        }
-                    }
-                    else if(PenTarget.Pressure > 0)
-                    {
-                        switch(Edge)
-                        {
-                            case 1:
-                            {
-                                PenState->Resize.E[0] += DeltaP.x;
-                            } break;
-                            case 2:
-                            {
-                                PenState->Resize.E[1] += DeltaP.y;
-                            } break;
-                            case 3:
-                            {
-                                PenState->Resize.E[2] += DeltaP.x;
-                            } break;
-                            case 4:
-                            {
-                                PenState->Resize.E[3] += DeltaP.y;
-                            } break;
+                            PenState->Resize.Edge = 2;
                         }
                     }
                     else
                     {
-                        Edge = 0;
+                        if(PenTarget.P.y > 0)
+                        {
+                            PenState->Resize.Edge = 3;
+                        }
+                        else
+                        {
+                            PenState->Resize.Edge = 4;
+                        }
+                    }
+                }
+                else if(PenTarget.Pressure > 0)
+                {
+                    switch(PenState->Resize.Edge)
+                    {
+                        case 1:
+                        {
+                            PenState->Resize.Right  += DeltaP.x;
+                        } break;
+                        case 2:
+                        {
+                            PenState->Resize.Left   += DeltaP.x;
+                        } break;
+                        case 3:
+                        {
+                            PenState->Resize.Top    += DeltaP.y;
+                        } break;
+                        case 4:
+                        {
+                            PenState->Resize.Bottom += DeltaP.y;
+                        } break;
                     }
                 }
                 else
                 {
-                    // TODO(Zyonji): Resize the canvas.
-                    PenState->Resize = {};
+                    PenState->Resize.Edge = 0;
                 }
             }
             else if(PenTarget.Mode & PEN_MODE_AREA_FILL)
