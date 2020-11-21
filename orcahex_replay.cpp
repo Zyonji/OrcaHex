@@ -58,11 +58,18 @@ CompressReplay(replay_state *Source, void *Target, u32 *TargetSize)
     *TargetSize = (u32)((umm)Chunk - (umm)Target);
 }
 
-internal void
+internal b32
 UnpackReplay(replay_state *Target, void *Source, u32 FileSize)
 {
     pen_target *Replay = (pen_target *)Target->Buffer;
     replay_chunk *Chunk = (replay_chunk *)Source;
+    
+    if(Chunk->Version != 2)
+    {
+        ClearReplay(Target);
+        return(false);
+    }
+    
     replay_chunk *SourceEnd = Chunk;
     SourceEnd += FileSize / sizeof(replay_chunk);
     Target->Version = 2;
@@ -104,6 +111,7 @@ UnpackReplay(replay_state *Target, void *Source, u32 FileSize)
         }
     }
     Target->Next = Replay;
+    return(true);
 }
 
 internal void
@@ -119,7 +127,7 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
     
     if(*Replay->BaseFile)
     {
-        OrcaState->Image = LoadImage(Replay->BaseFile, OrcaState->MaxId);
+        OrcaState->Image = LoadImageFile(Replay->BaseFile, OrcaState->MaxId);
     }
     else
     {

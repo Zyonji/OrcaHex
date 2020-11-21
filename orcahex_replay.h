@@ -5,7 +5,7 @@ struct replay_state
     u32 Version;
     u32 Magic;
     u32 Count;
-    char BaseFile[260];//MAX_PATH, which is defined as 260
+    char BaseFile[MAX_PATH];
     
     pen_target *Next;
     char Buffer[REPLAY_MAX * sizeof(pen_target)];
@@ -36,3 +36,7 @@ union replay_chunk
     };
     char E[16];
 };
+
+internal void ClearReplay(replay_state *Replay);
+internal void CompressReplay(replay_state *Source, void *Target, u32 *TargetSize);
+internal b32 UnpackReplay(replay_state *Target, void *Source, u32 FileSize);

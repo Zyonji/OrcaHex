@@ -1883,9 +1883,7 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
         0, 0, 0, 1,};
     v2s Cursor = {(s32)PenState.Point.x + (s32)OpenGL->DisplayFramebuffer.Size.Width / 2, (s32)PenState.Point.y + (s32)OpenGL->DisplayFramebuffer.Size.Height / 2};
     r32 HalfWidth = 0.5f * PenState.Width;
-    v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
-    if(Canvas.Mirrored)
-        Normal.x = -Normal.x;
+    v2 Normal = {sinf(PenState.PointRadians), cosf(PenState.PointRadians)};
     
     OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, Canvas.Scale * HalfWidth, Normal);
     glBindTexture(GL_TEXTURE_2D, OpenGL->DisplayFramebuffer.ColorHandle);
@@ -1969,7 +1967,7 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
             (s32)((PenState.P.y / Canvas.Size.Height + 0.5f) * 1080)
         };
         r32 HalfWidth = 0.5f * PenState.Width;
-        v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
+        v2 Normal = {sinf(PenState.PointRadians), cosf(PenState.PointRadians)};
         
         OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, 1080.0f / (r32)Canvas.Size.Height * HalfWidth, Normal);
         glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);

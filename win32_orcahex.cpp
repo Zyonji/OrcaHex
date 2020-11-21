@@ -1,15 +1,15 @@
+#include <windows.h>
+#include <GL/gl.h>
+
 #include "types.h"
 #include "orcahex.cpp"
 
-#include <windows.h>
-#include <GL/gl.h>
 #include "wintab.h"
 #define PACKETDATA (PK_X | PK_Y | PK_Z | PK_NORMAL_PRESSURE | PK_ORIENTATION | PK_TIME | PK_BUTTONS)
 //(PK_X | PK_Y | PK_Z | PK_NORMAL_PRESSURE | PK_TANGENT_PRESSURE | PK_ORIENTATION | PK_TIME | PK_BUTTONS | PK_CURSOR)
 #define PACKETMODE 0
 #define PACKETTOUCHRING PKEXT_ABSOLUTE
 #include "pktdef.h"
-#include "FreeImage.h"
 
 #define FILE_NAME_MASK "%02d-%02d-%02d_%08d_%%dmin.png"
 
@@ -264,44 +264,19 @@ struct window_data
     b32 Fullscreen;
 };
 
-struct image_data
-{
-    char NameBase[MAX_PATH]; // NOTE(Zyonji): YY-MM-DD_IIIIIIII_?min.jpg
-    char ReplayPath[MAX_PATH];
-    FIBITMAP *Bitmap;
-    void *Memory;
-    u32 Id;
-    u32 Width;
-    u32 Height;
-    u32 Minutes;
-};
-
 struct win32_orca_state : orca_state
 {
     open_gl OpenGL;
     window_mapping Map;
     window_data WindowData;
     image_data Image;
-    //replay_header *ReplayHeader;
     HWND StreamWindow;
+    HCTX TabletContext;
     b32 Active;
     s64 LastFrameTime;
     r32 PerformanceFrequency;
     u64 LastPenTime;
     char IniPath[MAX_PATH];
-};
-
-struct initial_state
-{
-    DWORD WindowStyle;
-    s32 WindowX;
-    s32 WindowY;
-    s32 WindowWidth;
-    s32 WindowHeight;
-    u32 MaxId;
-    v4 Color;
-    u32 Mode;
-    r32 Width;
 };
 
 global win32_orca_state *OrcaState;
@@ -315,10 +290,12 @@ Win32GetSecondsElapsed(LARGE_INTEGER Start, LARGE_INTEGER End)
     return(Result);
 }
 
-internal image_data LoadImage(char* Filename, u32 MaxId);
 internal void ChangeCanvas(open_gl *OpenGL, image_data ImageData, canvas_state *Canvas, u32area PaintingRegion);
 internal void FreeBitmap(image_data *ImageData);
 
+internal void CreateBitmap(open_gl *OpenGL, image_data *ImageData);
+internal u64 GetFileTime();
+#include "win32_file_manager.cpp"
 #include "orcahex_replay.cpp"
 
 internal void
@@ -371,11 +348,12 @@ LogError(char *Text, char *Caption)
     }
 }
 
-internal b32
+internal HCTX
 InitWinTab(HWND Window, window_mapping *Map)
 {
+    HCTX Result = 0;
     if(!LoadWintabFunctions())
-        return false;
+        return(Result);
     
     WTPKT TouchRingMask = 0;
 	UINT TouchRingIndex = 0xFFFFFFFF;
@@ -397,7 +375,7 @@ InitWinTab(HWND Window, window_mapping *Map)
     
     LOGCONTEXT Tablet;
     if(!gpWTInfoA(WTI_DEFCONTEXT, 0, &Tablet))
-        return false;
+        return(Result);
     
     Tablet.lcOptions |= CXO_MESSAGES; //CXO_CSRMESSAGES for handling multiple cursors.
     // TODO(Zyonji): Check how locking CXL_INSIZE works.
@@ -415,17 +393,16 @@ InitWinTab(HWND Window, window_mapping *Map)
     //gpWTInfoA(WTI_DEVICES, DVC_ORIENTATION, &Orientation);
     
     if(!Pressure.axMax)
-        return false;
+        return(Result);
     
     Map->AxisMax.x = (r32)Tablet.lcOutExtX;
     Map->AxisMax.y = (r32)Tablet.lcOutExtY;
     Map->AxisMax.z = (r32)Tablet.lcOutExtZ;
     Map->PressureMax = (r32)Pressure.axMax;
     
-    if(!gpWTOpenA(Window, &Tablet, TRUE))
-        return false;
+    Result = gpWTOpenA(Window, &Tablet, TRUE);
     
-    return true;
+    return(Result);
 }
 
 internal void
@@ -571,233 +548,6 @@ SecondsPassed(u64 *LastTime)
     return(Result);
 }
 
-internal char*
-RequestFileChoice(char *FileName, u32 NameSize) // NOTE(Zyonji): NameSize = sizeof(FileName) = MAX_PATH
-{
-    OPENFILENAME FileSelector = {};
-    
-    FileSelector.lStructSize = sizeof(FileSelector);
-    FileSelector.lpstrFile = FileName;
-    FileSelector.lpstrFile[0] = '\0';
-    FileSelector.nMaxFile = NameSize;
-    FileSelector.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-    
-    GetOpenFileNameA(&FileSelector);
-    return(FileName);
-}
-internal b32
-RequestFileDestination(char *FileName, u32 NameSize) // NOTE(Zyonji): NameSize = sizeof(FileName) = 260
-{
-    b32 Return;
-    OPENFILENAME FileSelector = {};
-    
-    FileSelector.lStructSize = sizeof(FileSelector);
-    FileSelector.lpstrFile = FileName;
-    FileSelector.lpstrFile[0] = '\0';
-    FileSelector.nMaxFile = NameSize;
-    FileSelector.Flags = OFN_PATHMUSTEXIST;
-    
-    Return = GetSaveFileNameA(&FileSelector);
-    return(Return);
-}
-internal void
-CreateFilePathMask(char *MaskBuffer, char *FilePath, char *PathEnd)
-{
-    char *At = MaskBuffer;
-    char *From = FilePath;
-    char *End = PathEnd;
-    while(End >= FilePath && *End != '/' && *End != '\\')
-    {
-        --End;
-    }
-    while(From <= End)
-    {
-        *At++ = *From++;
-    }
-    char *Mask = FILE_NAME_MASK;
-    while(*Mask)
-    {
-        *At++ = *Mask++;
-    }
-    *At = *Mask;
-}
-internal void
-FillFilePathMask(char *FilePathBase, char *FilePathMask, u32 Id)
-{
-    SYSTEMTIME SystemTime;
-    GetLocalTime(&SystemTime);
-    wsprintf(FilePathBase, FilePathMask, (SystemTime.wYear - 2000), SystemTime.wMonth, SystemTime.wDay, Id);
-}
-
-// TODO(Zyonji): Load and save pngs myself.
-internal image_data
-LoadImage(char* Filename, u32 MaxId)
-{
-    image_data Result = {};
-    
-    FREE_IMAGE_FORMAT ImageFormat = FIF_UNKNOWN;
-    ImageFormat = FreeImage_GetFileType(Filename, 0);
-    if(ImageFormat == FIF_UNKNOWN)
-    {
-        ImageFormat= FreeImage_GetFIFFromFilename(Filename);
-    }
-    
-    FIBITMAP *TempBitmap = 0;
-    if(FreeImage_FIFSupportsReading(ImageFormat))
-    {
-        TempBitmap = FreeImage_Load(ImageFormat, Filename);
-    }
-    if(!TempBitmap)
-    {
-        return(Result);
-    }
-    
-    char ReplayFile[MAX_PATH];
-    char *At = Filename;
-    char *To = ReplayFile;
-    while(*At)
-    {
-        *To++ = *At++;
-    }
-    *To = 0;
-    *--To = 'x';
-    *--To = '6';
-    *--To = 'o';
-    
-    char FilePathMask[MAX_PATH];
-    CreateFilePathMask(FilePathMask, Filename, At);
-    At -= 8;
-    if(At > Filename + 18)
-    {
-        u32 Order = 1;
-        for(; *At >= '0' && *At <= '9'; --At)
-        {
-            Result.Minutes += Order * (*At - '0');
-            Order *= 10;
-        }
-        if(*At-- == '_')
-        {
-            Order = 1;
-            To = Result.NameBase + 44;
-            for(u32 I = 0; I < 8; ++I, --To, --At)
-            {
-                Result.Id += Order * (*At - '0');
-                Order *= 10;
-                if(*At < '0' || *At > '9')
-                {
-                    Result.Id = MaxId;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            Result.Id = MaxId;
-        }
-    }
-    
-    FillFilePathMask(Result.NameBase, FilePathMask, Result.Id);
-    
-    FIBITMAP *Bitmap = FreeImage_ConvertTo32Bits(TempBitmap);
-    FreeImage_Unload(TempBitmap);
-    
-    Result.Bitmap = Bitmap;
-    Result.Memory = FreeImage_GetBits(Bitmap);
-    Result.Width = FreeImage_GetWidth(Bitmap);
-    Result.Height = FreeImage_GetHeight(Bitmap);
-    
-    // TODO(Zyonji): Clean this up.
-    HANDLE FileHandle = CreateFileA(ReplayFile, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-    if(FileHandle != INVALID_HANDLE_VALUE)
-    {
-        DWORD BytesRead = 0;
-        u32 MaxFileSize = (17 + REPLAY_MAX * 2) * sizeof(replay_chunk);
-        LPVOID FileMemory = VirtualAlloc(0, MaxFileSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-        
-        ReadFile(FileHandle, FileMemory, MaxFileSize, &BytesRead, 0);
-        CloseHandle(FileHandle);
-        UnpackReplay(&OrcaState->Replay, FileMemory, BytesRead);
-        VirtualFree(FileMemory, 0, MEM_RELEASE);
-        // TODO(Zyonji): Reorganize this in case the file is an older version.
-#if 0
-        // TODO(Zyonji): Fix this in the recording instead of the load.
-        u32 ReplayCount = OrcaState->ReplayHeader->Count;
-        r32 LastPressure = 0;
-        v2 LastP = {};
-        OrcaState->ReplayCount = 0;
-        OrcaState->NextReplay = OrcaState->ReplayBuffer;
-        while(OrcaState->ReplayCount < ReplayCount)
-        {
-            *OrcaState->NextReplay++;
-            OrcaState->ReplayCount++;
-            pen_target *Pen = OrcaState->NextReplay;
-            if(LastPressure == 0 && (2 * Pen->P.x  + Pen->Width * sinf(Pen->Radians) > Result.Width || 
-                                     -2 * Pen->P.x + Pen->Width * sinf(Pen->Radians) > Result.Width ||
-                                     2 * Pen->P.y  + Pen->Width * cosf(Pen->Radians) > Result.Height || 
-                                     -2 * Pen->P.y + Pen->Width * cosf(Pen->Radians) > Result.Height))
-            {
-                if(OrcaState->ReplayCount + 1 < ReplayCount)
-                {
-                    pen_target *NPen = OrcaState->NextReplay + 1;
-                    if(NPen->Pressure > 0)
-                    {
-                        if(2 * NPen->P.x  + NPen->Width * sinf(NPen->Radians) > Result.Width || 
-                           -2 * NPen->P.x + NPen->Width * sinf(NPen->Radians) > Result.Width ||
-                           2 * NPen->P.y  + NPen->Width * cosf(NPen->Radians) > Result.Height || 
-                           -2 * NPen->P.y + NPen->Width * cosf(NPen->Radians) > Result.Height)
-                        {
-                            if(OrcaState->ReplayCount + 2 < ReplayCount)
-                            {
-                                pen_target *NNPen = OrcaState->NextReplay + 2;
-                                if(2 * NNPen->P.x  + NNPen->Width * sinf(NNPen->Radians) > Result.Width || 
-                                   -2 * NNPen->P.x + NNPen->Width * sinf(NNPen->Radians) > Result.Width ||
-                                   2 * NNPen->P.y  + NNPen->Width * cosf(NNPen->Radians) > Result.Height || 
-                                   -2 * NNPen->P.y + NNPen->Width * cosf(NNPen->Radians) > Result.Height)
-                                {
-                                    Pen->P = LastP;
-                                }
-                                Pen->Pressure = 0;
-                            }
-                            else
-                            {
-                                Pen->Pressure = 0;
-                                Pen->P = LastP;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        Pen->Pressure = 0;
-                        Pen->P = LastP;
-                    }
-                }
-                else
-                {
-                    Pen->Pressure = 0;
-                    Pen->P = LastP;
-                }
-            }
-            
-            LastP = Pen->P;
-            LastPressure = Pen->Pressure;
-        }
-#endif
-        
-    }
-    else
-    {
-        At = Filename;
-        // TODO(Zyonji): This state change is not apparent when using this function.  I should return the ReplayHeader isntead of just setting it.
-        To = OrcaState->Replay.BaseFile;
-        while(*At)
-        {
-            *To++ = *At++;
-        }
-        *To = 0;
-    }
-    return(Result);
-}
-
 internal void
 CreateBitmap(open_gl *OpenGL, image_data *ImageData)
 {
@@ -816,46 +566,6 @@ FreeBitmap(image_data *ImageData)
 {
     FreeImage_Unload(ImageData->Bitmap);
     ImageData->Bitmap = 0;
-}
-
-internal b32
-SaveImage(image_data ImageData, u32 NewTime)
-{
-    b32 Result = 0;
-    char FileName[MAX_PATH];
-    wsprintf(FileName, ImageData.NameBase, NewTime);
-    
-    FIBITMAP *Bitmap = FreeImage_ConvertTo24Bits(ImageData.Bitmap);
-    //Result = FreeImage_Save(FIF_JPEG, Bitmap, FileName, JPEG_QUALITYSUPERB);
-    Result = FreeImage_Save(FIF_PNG, Bitmap, FileName, PNG_Z_BEST_SPEED);
-    FreeImage_Unload(Bitmap);
-    
-    // TODO(Zyonji): Clean this up.
-    char *At = FileName;
-    for(; *At; ++At)
-    {
-        
-    }
-    *--At = 'x';
-    *--At = '6';
-    *--At = 'o';
-    
-    HANDLE FileHandle = CreateFileA(FileName, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,0);
-    if(FileHandle != INVALID_HANDLE_VALUE)
-    {
-        u32 FileSize;
-        u32 MaxFileSize = (17 + REPLAY_MAX * 2) * sizeof(replay_chunk);
-        LPVOID FileMemory = VirtualAlloc(0, MaxFileSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
-        
-        CompressReplay(&OrcaState->Replay, FileMemory, &FileSize);
-        // TODO(Zyonji): Pack the data more tightly.
-        DWORD BytesWritten = 0;
-        WriteFile(FileHandle, FileMemory, FileSize, &BytesWritten, 0);
-        CloseHandle(FileHandle);
-        VirtualFree(FileMemory, 0, MEM_RELEASE);
-    }
-    
-    return(Result);
 }
 
 internal void
@@ -1043,11 +753,11 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
 }
 
 internal v2
-MapTabletInput(v2 TabletPoint, window_mapping Map)
+MapTabletInput(DWORD TabletPointX, DWORD TabletPointY, window_mapping Map)
 {
     v2 Result = {};
-    Result.x = TabletPoint.x * Map.Scalar.x - Map.Offset.x;
-    Result.y = TabletPoint.y * Map.Scalar.y - Map.Offset.y;
+    Result.x = (r32)TabletPointX * Map.Scalar.x - Map.Offset.x;
+    Result.y = (r32)TabletPointY * Map.Scalar.y - Map.Offset.y;
     return(Result);
 }
 
@@ -1079,9 +789,9 @@ ComputeTabletMapping(window_mapping *Map)
 }
 
 internal void
-ToggleFullscreen(HWND Window, window_data *WindowData, b32 Force16by9Full)
+ToggleFullscreen(HWND Window, window_data *WindowData)
 {
-    if(WindowData->Fullscreen && !Force16by9Full)
+    if(WindowData->Fullscreen)
     {
         SetWindowLongPtr(Window, GWL_STYLE, WS_VISIBLE | WS_OVERLAPPEDWINDOW);
         SetWindowPos(Window, HWND_NOTOPMOST, WindowData->Pos.x, WindowData->Pos.y, WindowData->Size.Width, WindowData->Size.Height, SWP_FRAMECHANGED);
@@ -1096,16 +806,9 @@ ToggleFullscreen(HWND Window, window_data *WindowData, b32 Force16by9Full)
         if(GetMonitorInfoA(Monitor, &MonitorInfo))
         {
             s32 ScreenHeight = MonitorInfo.rcMonitor.bottom - MonitorInfo.rcMonitor.top;
-            s32 ScreenWidth;
-            if(Force16by9Full)
-            {
-                ScreenWidth = (ScreenHeight * 16) / 9;
-            }
-            else
-            {
-                // TODO(Zyonji): Find a way to prevent exclusive full screen mode.
-                ScreenWidth = MonitorInfo.rcMonitor.right - MonitorInfo.rcMonitor.left + 1;
-            }
+            // TODO(Zyonji): Find a way to prevent exclusive full screen mode.
+            s32 ScreenWidth = MonitorInfo.rcMonitor.right - MonitorInfo.rcMonitor.left + 1;
+            
             s32 ScreenLeft = MonitorInfo.rcMonitor.left;
             s32 ScreenTop = MonitorInfo.rcMonitor.top;
             
@@ -1117,168 +820,6 @@ ToggleFullscreen(HWND Window, window_data *WindowData, b32 Force16by9Full)
         {
             LogError("Unable to read monitor data.", "Windows");
         }
-    }
-}
-internal void
-ToggleFullscreen(HWND Window, window_data *WindowData)
-{
-    ToggleFullscreen(Window, WindowData, false);
-}
-
-internal void
-SaveInitialState(initial_state InitialState, char *Path)
-{
-    HANDLE FileHandle = CreateFileA(Path, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
-    if(FileHandle != INVALID_HANDLE_VALUE)
-    {
-        DWORD BytesWritten = 0;
-        WriteFile(FileHandle, &InitialState, sizeof(InitialState), &BytesWritten, 0);
-        CloseHandle(FileHandle);
-    }
-}
-
-internal initial_state
-LoadInitialState(char *Path)
-{
-    initial_state Result = {};
-    HANDLE FileHandle = CreateFileA(Path, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-    if(FileHandle != INVALID_HANDLE_VALUE)
-    {
-        DWORD BytesRead = 0;
-        ReadFile(FileHandle, &Result, sizeof(Result), &BytesRead, 0);
-        CloseHandle(FileHandle);
-    }
-    return(Result);
-}
-
-// TODO(Zyonji): Get memory and such on this tread and then do the processing and actual saving on another thread to not slow down painting.
-// TODO(Zyonji): Set the parameters to show the requirements of the function.  Maybe split this into multiple functions to make reading code easier.
-SAVE_EVERYTHING(SaveEverything)
-{
-    if(!*(OrcaState->Image.NameBase))
-    {
-        char FileName[MAX_PATH];
-        if(RequestFileDestination(FileName, sizeof(FileName)))
-        {
-            char *At = FileName;
-            for(; *At; ++At)
-            {
-                
-            }
-            char FilePathMask[MAX_PATH];
-            CreateFilePathMask(FilePathMask, FileName, At);
-            FillFilePathMask(OrcaState->Image.NameBase, FilePathMask, OrcaState->Image.Id);
-        }
-    }
-    if(*(OrcaState->Image.NameBase))
-    {
-        RenderTimer(&OrcaState->OpenGL, OrcaState->Menu, {0, 0, 1, 1});
-        
-        if(OrcaState->Canvas.Size.Width && OrcaState->Canvas.Size.Height)
-        {
-            if(OrcaState->Image.Id >= OrcaState->MaxId)
-            {
-                OrcaState->MaxId = OrcaState->Image.Id + 1;
-            }
-            OrcaState->Image.Width = OrcaState->Canvas.Size.Width;
-            OrcaState->Image.Height = OrcaState->Canvas.Size.Height;
-            CreateBitmap(&OrcaState->OpenGL, &OrcaState->Image);
-            u32 NewTime = (u32)(((GetFileTime() - OrcaState->Canvas.StartingTime) / 10000000
-                                 - OrcaState->Canvas.SecondsIdle) / 60);
-            if(SaveImage(OrcaState->Image, NewTime))
-            {
-                OrcaState->Image.Minutes = NewTime;
-                OrcaState->Canvas.Hot = false;
-            }
-            else
-            {
-                LogError("Unable to save the image.", "FreeImage");
-            }
-        }
-        
-        WINDOWINFO WindowInfo = {};
-        GetWindowInfo(OrcaState->Map.Window, &WindowInfo);
-        
-        initial_state CurrentState = {};
-        CurrentState.WindowStyle = WindowInfo.dwStyle;
-        CurrentState.WindowX = OrcaState->WindowData.Pos.x;
-        CurrentState.WindowY = OrcaState->WindowData.Pos.y;
-        CurrentState.WindowWidth = OrcaState->WindowData.Size.Width;
-        CurrentState.WindowHeight = OrcaState->WindowData.Size.Height;
-        CurrentState.MaxId = OrcaState->MaxId;
-        CurrentState.Color = OrcaState->Pen.Color;
-        CurrentState.Mode = OrcaState->Pen.Mode;
-        CurrentState.Width = OrcaState->Pen.Width;
-        SaveInitialState(CurrentState, OrcaState->IniPath);
-        
-        return(true);
-    }
-    else
-    {
-        return(false);
-    }
-}
-
-// TODO(Zyonji): Considder a choice for canvas size.
-CREATE_NEW_FILE(CreateNewFile)
-{
-    // TODO(Zyonji): That's a hot fix, because I just accidentally deleted a painting without warning.
-    b32 LoadNewCanvas = false;
-    if(OrcaState->Canvas.Hot)
-    {
-        s32 MessageBoxValue = MessageBox(OrcaState->Map.Window, "Save before starting new?", "New", MB_YESNOCANCEL | MB_DEFBUTTON1 | MB_APPLMODAL);
-        if(MessageBoxValue == IDYES)
-        {
-            LoadNewCanvas = OrcaState->SaveEverything();
-        }
-        if(MessageBoxValue == IDNO)
-        {
-            LoadNewCanvas = true;
-        }
-    }
-    else
-    {
-        LoadNewCanvas = true;
-    }
-    
-    if(LoadNewCanvas)
-    {
-        image_data ImageData = {};
-        ImageData.Width = Width;
-        ImageData.Height = Height;
-        
-        ChangeCanvas(&OrcaState->OpenGL, ImageData, &OrcaState->Canvas, PaintingRegion);
-        FreeBitmap(&ImageData);
-        OrcaState->Image = ImageData;
-        OrcaState->Image.Id = MaxId;
-        
-        ClearReplay(&OrcaState->Replay);
-    }
-}
-
-internal void
-LoadCanvas(open_gl *OpenGL, image_data *Image, canvas_state *Canvas, char* FileName, u32area PaintingRegion, u32 MaxId)
-{
-    image_data ImageData = LoadImage(FileName, MaxId);
-    if(ImageData.Bitmap)
-    {
-        ChangeCanvas(OpenGL, ImageData, Canvas, PaintingRegion);
-        FreeBitmap(&ImageData);
-        *Image = ImageData;
-    }
-    else
-    {
-        LogError("Unable to load the image.", "FreeImage");
-    }
-}
-LOAD_FILE(LoadFile)
-{
-    // TODO(Zyonji): Disable wintab and afterards reenable wintab.
-    char FileName[MAX_PATH];
-    RequestFileChoice(FileName, sizeof(FileName));
-    if(*FileName)
-    {
-        LoadCanvas(&OrcaState->OpenGL, &OrcaState->Image, Canvas, FileName, PaintingRegion, MaxId);
     }
 }
 
@@ -1321,19 +862,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
         case WM_DESTROY:
         case WM_CLOSE:
         {
-            if(OrcaState->Canvas.Hot)
-            {
-                s32 MessageBoxValue = MessageBox(Window, "Save before quitting?", "Closing", MB_YESNOCANCEL | MB_DEFBUTTON1 | MB_APPLMODAL);
-                if(MessageBoxValue == IDYES)
-                {
-                    OrcaState->SaveEverything();
-                }
-                if(MessageBoxValue == IDYES || MessageBoxValue == IDNO)
-                {
-                    PostQuitMessage(0);
-                }
-            }
-            else
+            if(OfferToSaveHotCanvas())
             {
                 PostQuitMessage(0);
             }
@@ -1391,16 +920,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     u64 CurrentFileTime = GetFileTime();
                     u64 LastTime = OrcaState->Canvas.StartingTime;
                     u32 SecondsPassed = (u32)((CurrentFileTime - LastTime) / 10000000);
-                    r32 TimerProgression= (((r32)(SecondsPassed - OrcaState->Canvas.SecondsIdle)) / 60.0f - ((r32)OrcaState->Image.Minutes)) / 30.0f;
-                    
-#if 0
-                    if(true)
-                    {
-                        char Buffer[256];
-                        wsprintf(Buffer, "Time: %I64u, Minutes %u\n", CurrentFileTime, (u32)(TimerProgression * 30));
-                        OutputDebugStringA(Buffer);
-                    }
-#endif
+                    r32 TimerProgression = (((r32)(SecondsPassed - OrcaState->Canvas.SecondsIdle)) / 60.0f - ((r32)OrcaState->Image.Minutes)) / 30.0f;
                     
                     HDC WindowDC = GetDC(Window);
                     wglMakeCurrent(WindowDC, OrcaState->OpenGL.RenderingContext);
@@ -1476,36 +996,21 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     RequestFileChoice(FileName, sizeof(FileName));
                     if(*FileName)
                     {
-                        FREE_IMAGE_FORMAT ImageFormat = FIF_UNKNOWN;
-                        ImageFormat = FreeImage_GetFileType(FileName, 0);
-                        if(ImageFormat == FIF_UNKNOWN)
+                        image_data Reference = LoadImageFile(FileName, OrcaState->MaxId);
+                        
+                        if(Reference.Bitmap)
                         {
-                            ImageFormat= FreeImage_GetFIFFromFilename(FileName);
+                            OrcaState->Canvas.ReferenceSize = {Reference.Width, Reference.Height};
+                            
+                            if(OrcaState->OpenGL.ReferenceFramebuffer.FramebufferHandle)
+                            {
+                                FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
+                            }
+                            OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, Reference.Memory);
+                            
+                            FreeImage_Unload(Reference.Bitmap);
                         }
                         
-                        FIBITMAP *TempBitmap = 0;
-                        if(FreeImage_FIFSupportsReading(ImageFormat))
-                        {
-                            TempBitmap = FreeImage_Load(ImageFormat, FileName);
-                        }
-                        if(TempBitmap)
-                        {
-                            FIBITMAP *Bitmap = FreeImage_ConvertTo32Bits(TempBitmap);
-                            FreeImage_Unload(TempBitmap);
-                            
-                            if(Bitmap)
-                            {
-                                OrcaState->Canvas.ReferenceSize = {FreeImage_GetWidth(Bitmap), FreeImage_GetHeight(Bitmap)};
-                                
-                                if(OrcaState->OpenGL.ReferenceFramebuffer.FramebufferHandle)
-                                {
-                                    FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
-                                }
-                                OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, FreeImage_GetBits(Bitmap));
-                                
-                                FreeImage_Unload(Bitmap);
-                            }
-                        }
                         
                         InvalidateRect(Window, 0, true);
                     }
@@ -1517,7 +1022,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     RequestFileChoice(FileName, sizeof(FileName));
                     if(*FileName)
                     {
-                        image_data ImageReference = LoadImage(FileName, OrcaState->MaxId);
+                        image_data ImageReference = LoadImageFile(FileName, OrcaState->MaxId);
                         image_data ImageData = {};
                         if(ImageReference.Width > ImageReference.Height)
                         {
@@ -1551,7 +1056,6 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 } break;
                 case VK_F12:
                 {
-                    //ToggleFullscreen(Window, &OrcaState->WindowData, true);
                     if(!OrcaState->StreamWindow)
                     {
                         OrcaState->StreamWindow = CreateWindowExA(
@@ -1578,15 +1082,13 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
             PACKET Packet;
             if(gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet)) 
             {
-                v2 TabletPoint = {(r32)Packet.pkX, (r32)Packet.pkY};
-                v2 Point = MapTabletInput(TabletPoint, OrcaState->Map);
+                v2 Point = MapTabletInput(Packet.pkX, Packet.pkY, OrcaState->Map);
                 r32 Width = OrcaState->Pen.NextWidth;
                 r32 Radians = (Pi32 / 1800.0f) * (r32)Packet.pkOrientation.orAzimuth;
-                if(OrcaState->Canvas.Mirrored)
-                    Radians = (2 * Pi32) - Radians;
                 r32 RightOfMenu = Point.x + OrcaState->Menu.Origin.x - OrcaState->Menu.Size.Width;
                 r32 TopOfMenu   = Point.y + OrcaState->Menu.Origin.y - OrcaState->Menu.Size.Height;
                 r32 Pressure = 0;
+                // NOTE(Zyonji): Only when pressure was set last time or pen is outside the menu.
                 if(OrcaState->Pen.Pressure > 0 || RightOfMenu >= 0 || TopOfMenu >= 0)
                 {
                     Pressure = (r32)Packet.pkNormalPressure / OrcaState->Map.PressureMax;
@@ -1611,7 +1113,7 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 pen_target PenTarget = {};
                 PenTarget.P          = MapFrameToCanvas(Point, OrcaState->DisplaySize, OrcaState->PaintingRegion, OrcaState->Canvas);
                 PenTarget.Pressure   = Pressure;
-                PenTarget.Radians    = Radians;
+                PenTarget.Radians    = MapFrameToCanvas(Radians, OrcaState->Canvas);
                 PenTarget.Width      = Width;
                 PenTarget.Color      = Color;
                 PenTarget.Mode       = Mode;
@@ -1627,13 +1129,14 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 }
                 OrcaState->Pen.Buttons = Buttons;
                 OrcaState->Pen.Point = Point;
+                OrcaState->Pen.PointRadians = Radians;
             }
         } break;
         
         case WT_PACKETEXT:
         {
             PACKETEXT Packet = {};
-            if (gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet))
+            if(gpWTPacket((HCTX)LParam, (UINT)WParam, &Packet))
             {
                 // TODO(Zyonji): Figure out how to detect the 0 position package when lifting the finger.
                 if(Packet.pkTouchRing.nPosition)
@@ -1677,64 +1180,23 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState = (win32_orca_state *)GeneralMemory;
             OrcaState->PickColor = CPUPickColor;
             OrcaState->UpdateMenu = CPUUpdateMenu;
-            OrcaState->CreateNewFile = CPUCreateNewFile;
-            OrcaState->SaveEverything = CPUSaveEverything;
-            OrcaState->LoadFile = LoadFile;
             OrcaState->RenderBrushStroke = CPURenderBrushStroke;
             OrcaState->RenderAreaFlip = CPURenderAreaFlip;
             OrcaState->ResizeCanvas = CPUResizeCanvas;
             
             InitReplay(&OrcaState->Replay);
-            
-            char *Path = OrcaState->IniPath;
-            {
-                u32 Length = GetModuleFileNameA(0, Path, sizeof(OrcaState->IniPath));
-                char *At = Path + Length;
-                while(At >= Path && *At != '/' && *At != '\\')
-                {
-                    --At;
-                }
-                At++;
-                char *Mask = "OrcaHex.ini";
-                while(*Mask)
-                {
-                    *At++ = *Mask++;
-                }
-                *At = *Mask;
-            }
-            
-            initial_state InitialState = LoadInitialState(Path);
-            if(!InitialState.MaxId)
-            {
-                InitialState.WindowStyle = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-                InitialState.WindowX = 10;
-                InitialState.WindowY = 10;
-                InitialState.WindowWidth = 920;
-                InitialState.WindowHeight = 680;
-                InitialState.Color = {0.5f, 0.5f, 0.5f, 1.0f};
-                InitialState.Mode = COLOR_MODE_PRESSURE | COLOR_MODE_CHROMA | COLOR_MODE_LUMINANCE;
-                InitialState.Width = 16.0f;
-                InitialState.MaxId = 1;
-            }
-            OrcaState->MaxId = InitialState.MaxId;
-            OrcaState->Pen.Color = InitialState.Color;
-            OrcaState->Pen.Mode = InitialState.Mode;
-            OrcaState->Pen.NextWidth = InitialState.Width;
-            OrcaState->WindowData.Pos.x = InitialState.WindowX;
-            OrcaState->WindowData.Pos.y = InitialState.WindowY;
-            OrcaState->WindowData.Size.Width = InitialState.WindowWidth;
-            OrcaState->WindowData.Size.Height = InitialState.WindowHeight;
-            OrcaState->Canvas.Scale = 1;
+            GenerateIniPath(OrcaState->IniPath, sizeof(OrcaState->IniPath));
+            DWORD LastWindowStyle = LoadInitialState(OrcaState, OrcaState->IniPath);
             
             HWND Window = CreateWindowExA(
                 0,
                 WindowClass.lpszClassName,
                 "OrcaHex",
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                InitialState.WindowX,
-                InitialState.WindowY,
-                InitialState.WindowWidth,
-                InitialState.WindowHeight,
+                OrcaState->WindowData.Pos.x,
+                OrcaState->WindowData.Pos.y,
+                OrcaState->WindowData.Size.Width,
+                OrcaState->WindowData.Size.Height,
                 0,
                 0,
                 Instance,
@@ -1744,12 +1206,11 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             {
                 if(InitOpenGL(&OrcaState->OpenGL, GetDC(Window)))
                 {
-                    if(InitWinTab(Window, &OrcaState->Map))
+                    OrcaState->TabletContext = InitWinTab(Window, &OrcaState->Map);
+                    if(OrcaState->TabletContext)
                     {
                         OrcaState->PickColor = PickColor;
                         OrcaState->UpdateMenu = UpdateMenu;
-                        OrcaState->CreateNewFile = CreateNewFile;
-                        OrcaState->SaveEverything = SaveEverything;
                         OrcaState->RenderBrushStroke = RenderBrushStroke;
                         OrcaState->RenderAreaFlip = RenderAreaFlip;
                         OrcaState->ResizeCanvas = ResizeCanvas;
@@ -1763,7 +1224,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         QueryPerformanceFrequency(&PerfCountFrequencyResult);
                         OrcaState->PerformanceFrequency = (r32)PerfCountFrequencyResult.QuadPart;
                         
-                        if(InitialState.WindowStyle & WS_POPUP)
+                        if(LastWindowStyle & WS_POPUP)
                         {
                             ToggleFullscreen(Window, &OrcaState->WindowData);
                         }

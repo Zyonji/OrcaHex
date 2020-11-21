@@ -74,6 +74,7 @@ struct pen_state : pen_target
 {
     pen_base Delta;
     v2 Point;
+    r32 PointRadians;
     v2 Origin;
     v2 Spread;
     r32 NextWidth;
@@ -86,6 +87,7 @@ struct canvas_state
     v2u Size;
     v2u ReferenceSize;
     r32 Scale;
+    r32 RadiansMap;
     v2 XMap;
     v2 YMap;
     v2 Center;
@@ -98,12 +100,6 @@ struct canvas_state
 typedef PICK_COLOR(pick_color);
 #define UPDATE_MENU(name) void name(menu_state *Menu, v4 Color, u32 ColorMode)
 typedef UPDATE_MENU(update_menu);
-#define CREATE_NEW_FILE(name) void name(u32 MaxId, u32area PaintingRegion, u32 Width, u32 Height)
-typedef CREATE_NEW_FILE(create_new_file);
-#define SAVE_EVERYTHING(name) b32 name()
-typedef SAVE_EVERYTHING(save_everything);
-#define LOAD_FILE(name) void name(canvas_state *Canvas, u32area PaintingRegion, u32 MaxId)
-typedef LOAD_FILE(load_file);
 #define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
 #define RENDER_AREA_FLIP(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen, v2 Origin, v2 Spread, v4 Color, u32 Step)
@@ -112,6 +108,7 @@ typedef RENDER_AREA_FLIP(render_area_flip);
 typedef RESIZE_CANVAS(resize_canvas);
 
 #include "orcahex_replay.h"
+#include "win32_file_manager.h"
 
 struct orca_state
 {
@@ -124,17 +121,8 @@ struct orca_state
     
     replay_state Replay;
     
-#if 0
-    pen_target *ReplayBuffer;
-    pen_target *NextReplay;
-    u32 ReplayCount;
-#endif
-    
     pick_color *PickColor;
     update_menu *UpdateMenu;
-    create_new_file *CreateNewFile;
-    save_everything *SaveEverything;
-    load_file *LoadFile;
     render_brush_stroke *RenderBrushStroke;
     render_area_flip *RenderAreaFlip;
     resize_canvas *ResizeCanvas;
@@ -152,19 +140,6 @@ internal PICK_COLOR(CPUPickColor)
 internal UPDATE_MENU(CPUUpdateMenu)
 {
     LogError("The undefined default menu updating function was used.", "OrcaHex");
-}
-internal CREATE_NEW_FILE(CPUCreateNewFile)
-{
-    LogError("The undefined default file creating function was used.", "OrcaHex");
-}
-internal SAVE_EVERYTHING(CPUSaveEverything)
-{
-    LogError("The undefined default saving function was used.", "OrcaHex");
-    return(false);
-}
-internal LOAD_FILE(CPULoadFile)
-{
-    LogError("The undefined default file loading function was used.", "OrcaHex");
 }
 internal RENDER_BRUSH_STROKE(CPURenderBrushStroke)
 {
@@ -371,6 +346,7 @@ internal void
 ResetCanvasTransform(canvas_state *Canvas, u32area PaintingRegion)
 {
     Canvas->Scale = 1 / (r32)(Maximum(Canvas->Size.Width / PaintingRegion.Width, Canvas->Size.Height / PaintingRegion.Height) + 1);
+    Canvas->RadiansMap = 0;
     Canvas->XMap = {1, 0};
     Canvas->YMap = {0, 1};
     Canvas->Center = {0, 0};
@@ -388,6 +364,18 @@ MapFrameToCanvas(v2 P, v2u DisplaySize, u32area PaintingRegion, canvas_state Can
     v2 Offset = P - PaintingRegionCenterOffset - Canvas.Center;
     Result.x = Inner(Canvas.XMap, Offset) / Canvas.Scale;
     Result.y = Inner(Canvas.YMap, Offset) / Canvas.Scale;
+    return(Result);
+}
+
+internal r32
+MapFrameToCanvas(r32 Radians, canvas_state Canvas)
+{
+    r32 Result = Radians;
+    if(Canvas.Mirrored)
+    {
+        Result = -Result;
+    }
+    Result += Canvas.RadiansMap;
     return(Result);
 }
 
@@ -409,21 +397,20 @@ ChangeCanvasScale(canvas_state *Canvas, r32 Factor)
 internal void
 RotateCanvas(canvas_state *Canvas, r32 Radians)
 {
-    if(!Canvas->Mirrored)
+    if(Canvas->Mirrored)
     {
-        Radians = -Radians;
+        Canvas->RadiansMap += Radians;
+        Canvas->XMap = {-cosf(Canvas->RadiansMap), sinf(Canvas->RadiansMap)};
+        Canvas->YMap = { sinf(Canvas->RadiansMap), cosf(Canvas->RadiansMap)};
+    }
+    else
+    {
+        Canvas->RadiansMap -= Radians;
+        Canvas->XMap = { cosf(Canvas->RadiansMap), sinf(Canvas->RadiansMap)};
+        Canvas->YMap = {-sinf(Canvas->RadiansMap), cosf(Canvas->RadiansMap)};
     }
     v2 TempX = { cosf(Radians), sinf(Radians)};
     v2 TempY = {-sinf(Radians), cosf(Radians)};
-    v2 XX = {Canvas->XMap.x, Canvas->YMap.x};
-    v2 YY = {Canvas->XMap.y, Canvas->YMap.y};
-    Canvas->XMap = {Inner(XX, TempX), Inner(YY, TempX)};
-    Canvas->YMap = {Inner(XX, TempY), Inner(YY, TempY)};
-    if(!Canvas->Mirrored)
-    {
-        TempX.y = -TempX.y;
-        TempY.x = -TempY.x;
-    }
     Canvas->Center = {Inner(Canvas->Center, TempX), Inner(Canvas->Center, TempY)};
 }
 internal void
@@ -469,13 +456,25 @@ internal b32 // NOTE(Zyonji): true if the the frame needs to be updated.
 ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Buttons, b32 IsPenClose, b32 FreshClick, b32 RecordReplay)
 {
     pen_state *PenState = &OrcaState->Pen;
+    b32 PickColorButton;
+    b32 MoveCanvasButton;
+    if(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)
+    {
+        PickColorButton = (0x4 & Buttons);
+        MoveCanvasButton = (0x2 & Buttons);
+    }
+    else
+    {
+        PickColorButton = (0x2 & Buttons);
+        MoveCanvasButton = (0x4 & Buttons);
+    }
     
     if(Point.y + OrcaState->Menu.Origin.y <= OrcaState->Menu.Size.Height && Point.x + OrcaState->Menu.Origin.x <= OrcaState->Menu.Size.Width  && PenState->Pressure == 0)
     {
         menu_state Menu = OrcaState->Menu;
         v2 P = {Point.x + OrcaState->Menu.Origin.x, Point.y + OrcaState->Menu.Origin.y};
         
-        if(((0x2 & Buttons) && !(0x2 & PenState->Buttons) && !(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)) || ((0x4 & Buttons) && !(0x4 & PenState->Buttons) &&  (PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)))
+        if(PickColorButton && ((!(0x2 & PenState->Buttons) && !(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)) || (!(0x4 & PenState->Buttons) &&  (PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED))))
         {
             if(P.x >= Menu.Alpha.x + (Menu.Steps - 1) * Menu.Offset.x && P.x < Menu.Alpha.x + Menu.Alpha.Width&& P.y >= Menu.Alpha.y && P.y < Menu.Alpha.y + Menu.Alpha.Height + (Menu.Steps - 1) * Menu.Offset.y)
             {
@@ -498,15 +497,15 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         {
             if(Inside(Menu.New, P))
             {
-                OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
+                RequestEmptyFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
             }
             else if(Inside(Menu.Open, P))
             {
-                OrcaState->LoadFile(&OrcaState->Canvas, OrcaState->PaintingRegion, OrcaState->MaxId);
+                RequestFileLoad(&OrcaState->Canvas, OrcaState->PaintingRegion, OrcaState->MaxId);
             }
             else if(Inside(Menu.Save, P))
             {
-                OrcaState->SaveEverything();
+                SaveEverything();
             }
             else if(Inside(Menu.Small, P))
             {
@@ -605,29 +604,14 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         //if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
         if(IsPenClose) 
         {
-            if(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)
+            if(PickColorButton)
             {
-                if(0x4 & Buttons)
-                {
-                    PenTarget.Color = OrcaState->PickColor(Point);
-                    OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
-                }
-                if(0x2 & Buttons)
-                {
-                    OrcaState->Canvas.Center += Point - PenState->Point;
-                }
+                PenTarget.Color = OrcaState->PickColor(Point);
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
-            else
+            if(MoveCanvasButton)
             {
-                if(0x2 & Buttons)
-                {
-                    PenTarget.Color = OrcaState->PickColor(Point);
-                    OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
-                }
-                if(0x4 & Buttons)
-                {
-                    OrcaState->Canvas.Center += Point - PenState->Point;
-                }
+                OrcaState->Canvas.Center += Point - PenState->Point;
             }
         }
         
@@ -643,7 +627,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             }
         }
         
-        if((PenTarget.Pressure > 0 || PenState->Pressure > 0) && !(0x4 & Buttons) && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width)
+        if((PenTarget.Pressure > 0 || PenState->Pressure > 0) && !MoveCanvasButton && OrcaState->Canvas.Size.Height && OrcaState->Canvas.Size.Width)
         {
             if(OrcaState->Replay.Count < REPLAY_MAX - 1 && RecordReplay)
             {
