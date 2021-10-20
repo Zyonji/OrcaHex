@@ -272,6 +272,7 @@ struct win32_orca_state : orca_state
     image_data Image;
     HWND StreamWindow;
     HCTX TabletContext;
+    b32 SleepIsGranular;
     b32 Active;
     s64 LastFrameTime;
     r32 PerformanceFrequency;
@@ -633,7 +634,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->TiltToggle = {2 * Gap + Block / 2, Y, Block / 2, Block / 2};
         Menu->AreaFillToggle = {4 * Gap + Block, Y, Block / 2, Block / 2};
         Menu->ResizeToggle = {5 * Gap + Block * 3 / 2, Y, Block / 2, Block / 2};
-        // TODO(Zyonji): Make a selct area and fill option.
+        Menu->BrushStyleSwitch = {7 * Gap + Block * 2, Y, Block / 2, Block / 2};
         Y -= Gap + Block;
         Menu->ColorA = {2 * Gap + Block / 2, Y, Block, Block};
         Menu->ColorB = {2 * Gap + Block * 3 / 2, Y, Block, Block};
@@ -696,6 +697,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->TiltToggle = {X, 2 * Gap + Block / 2, Block / 2, Block / 2};
         Menu->AreaFillToggle = {X, 4 * Gap + Block, Block / 2, Block / 2};
         Menu->ResizeToggle = {X, 5 * Gap + Block * 3 / 2, Block / 2, Block / 2};
+        Menu->BrushStyleSwitch = {X, 7 * Gap + Block * 2, Block / 2, Block / 2};
         X += Gap + Block / 2;
         Menu->ColorA = {X, 2 * Gap + Block / 2, Block, Block};
         Menu->ColorB = {X, 2 * Gap + Block * 3 / 2, Block, Block};
@@ -821,6 +823,30 @@ ToggleFullscreen(HWND Window, window_data *WindowData)
             LogError("Unable to read monitor data.", "Windows");
         }
     }
+}
+
+BOOL CALLBACK
+CycleStreamMonitor(HMONITOR Monitor, HDC DevideContext, LPRECT MonitorRect, LPARAM Data)
+{
+    local_persist LONG Left = 0;
+    local_persist LONG Top = 0;
+    local_persist LONG LastEquals = 1;
+    
+    if(MonitorRect->left == Left && MonitorRect->top == Top)
+    {
+        LastEquals = 1;
+    }
+    else if(LastEquals)
+    {
+        LastEquals = 0;
+        Left = MonitorRect->left;
+        Top = MonitorRect->top;
+        
+        SetWindowPos(OrcaState->StreamWindow, HWND_NOTOPMOST, Left, Top, 1920, 1080, SWP_FRAMECHANGED);
+        return false;
+    }
+    return true;
+    // TODO(Zyonji): It doesn't work if the last one is the current window position, got to press F12 again in that case.
 }
 
 RESIZE_CANVAS(ResizeCanvas)
@@ -1016,6 +1042,40 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     }
                 } break;
                 
+                case VK_F5:
+                {
+                    r32 Scale = 1;
+                    if(OrcaState->Image.Width > OrcaState->Image.Height)
+                    {
+                        Scale = 6000 / (r32)OrcaState->Image.Width;
+                        OrcaState->Image.Height = (u32)(Scale * OrcaState->Image.Height);
+                        OrcaState->Image.Width = 6000;
+                    }
+                    else
+                    {
+                        Scale = 6000 / (r32)OrcaState->Image.Height;
+                        OrcaState->Image.Width = (u32)(Scale * OrcaState->Image.Width);
+                        OrcaState->Image.Height = 6000;
+                    }
+                    
+                    pen_target *Replay = (pen_target *)OrcaState->Replay.Buffer;
+                    while(Replay < OrcaState->Replay.Next)
+                    {
+                        Replay->P *= Scale;
+                        Replay->Width *= Scale;
+                        Replay++;
+                    }
+                    
+                    b32 Alive = true;
+                    AnimateReplay(Window, &Alive, OrcaState->SleepIsGranular, 61);
+                } break;
+                
+                case VK_F6:
+                {
+                    RequestEmptyFile(OrcaState->MaxId, OrcaState->PaintingRegion, 200, 300);
+                    InvalidateRect(Window, 0, true);
+                } break;
+                
                 case VK_F7:
                 {
                     char FileName[MAX_PATH];
@@ -1073,6 +1133,11 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                             0);
                         SetPixelFormat(GetDC(OrcaState->StreamWindow));
                     }
+                    else 
+                    {
+                        EnumDisplayMonitors(0, 0, CycleStreamMonitor, 0);
+                    }
+                    InvalidateRect(Window, 0, true);
                 } break;
             }
         } break;
@@ -1184,6 +1249,8 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState->RenderAreaFlip = CPURenderAreaFlip;
             OrcaState->ResizeCanvas = CPUResizeCanvas;
             
+            OrcaState->SleepIsGranular = SleepIsGranular;
+            
             InitReplay(&OrcaState->Replay);
             GenerateIniPath(OrcaState->IniPath, sizeof(OrcaState->IniPath));
             DWORD LastWindowStyle = LoadInitialState(OrcaState, OrcaState->IniPath);
@@ -1256,7 +1323,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                                 
                                 if(GlobalReplayModeChange)
                                 {
-                                    AnimateReplay(Window, &Alive, SleepIsGranular);
+                                    AnimateReplay(Window, &Alive, SleepIsGranular, (60 * 60 * 15) + 1);
                                 }
                             }
                             else

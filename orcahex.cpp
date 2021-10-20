@@ -1,12 +1,13 @@
-#define COLOR_MODE_LUMINANCE     0x01
-#define COLOR_MODE_CHROMA        0x02
-#define COLOR_MODE_ALPHA         0x04
-#define COLOR_MODE_PRESSURE      0x08
-#define TILT_MODE_DISABLE        0x10
-#define PEN_BUTTON_MODE_FLIPPED  0x20
-#define MENU_MODE_AB             0x40
-#define PEN_MODE_AREA_FILL       0x80
-#define PEN_MODE_RESIZE          0x100
+#define PEN_BRUSH_STYLE          0x000F
+#define COLOR_MODE_LUMINANCE     0x0010
+#define COLOR_MODE_CHROMA        0x0020
+#define COLOR_MODE_ALPHA         0x0040
+#define COLOR_MODE_PRESSURE      0x0080
+#define TILT_MODE_DISABLE        0x0100
+#define PEN_BUTTON_MODE_FLIPPED  0x0200
+#define MENU_MODE_AB             0x0400
+#define PEN_MODE_AREA_FILL       0x0800
+#define PEN_MODE_RESIZE          0x1000
 
 struct menu_state
 {
@@ -35,6 +36,7 @@ struct menu_state
     u32area TiltToggle;
     u32area AreaFillToggle;
     u32area ResizeToggle;
+    u32area BrushStyleSwitch;
     u32area ColorA;
     u32area ColorB;
     u32area ColorButtonA;
@@ -460,12 +462,12 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
     b32 MoveCanvasButton;
     if(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)
     {
-        PickColorButton = (0x4 & Buttons);
+        PickColorButton = (0x4 & Buttons) && !(0x4 & PenState->Buttons);
         MoveCanvasButton = (0x2 & Buttons);
     }
     else
     {
-        PickColorButton = (0x2 & Buttons);
+        PickColorButton = (0x2 & Buttons) && !(0x2 & PenState->Buttons);
         MoveCanvasButton = (0x4 & Buttons);
     }
     
@@ -474,7 +476,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         menu_state Menu = OrcaState->Menu;
         v2 P = {Point.x + OrcaState->Menu.Origin.x, Point.y + OrcaState->Menu.Origin.y};
         
-        if(PickColorButton && ((!(0x2 & PenState->Buttons) && !(PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED)) || (!(0x4 & PenState->Buttons) &&  (PenTarget.Mode & PEN_BUTTON_MODE_FLIPPED))))
+        if(PickColorButton)
         {
             if(P.x >= Menu.Alpha.x + (Menu.Steps - 1) * Menu.Offset.x && P.x < Menu.Alpha.x + Menu.Alpha.Width&& P.y >= Menu.Alpha.y && P.y < Menu.Alpha.y + Menu.Alpha.Height + (Menu.Steps - 1) * Menu.Offset.y)
             {
@@ -564,6 +566,11 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
                 PenTarget.Mode ^= PEN_MODE_RESIZE;
                 OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
+            else if(Inside(Menu.BrushStyleSwitch, P))
+            {
+                PenTarget.Mode = (PenTarget.Mode & (~PEN_BRUSH_STYLE)) | (((PenTarget.Mode & PEN_BRUSH_STYLE) + 1) % 4);
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
             else if(Inside(Menu.ColorButtonA, P))
             {
                 PenTarget.Mode |= COLOR_MODE_PRESSURE;
@@ -599,9 +606,6 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
     else
     {
         v2 DeltaP = PenTarget.P - PenState->P;
-        //r32 CanvasEdgeX = (r32)OrcaState->Canvas.Size.Width / 2.0f;
-        //r32 CanvasEdgeY = (r32)OrcaState->Canvas.Size.Height / 2.0f;
-        //if(PenTarget.P.x > -CanvasEdgeX && PenTarget.P.x < CanvasEdgeX && PenTarget.P.y > -CanvasEdgeY && PenTarget.P.y < CanvasEdgeY && IsPenClose) 
         if(IsPenClose) 
         {
             if(PickColorButton)
@@ -785,18 +789,43 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
                     WidthDelta =  MaximumWidthDelta;
                 PenTarget.Width = WidthDelta + OrcaState->Pen.Width;
                 
+                if((PenTarget.Mode & PEN_BRUSH_STYLE) == 2)
+                {
+                    r32 PressureDelta = PenTarget.Pressure - PenState->Pressure;
+                    r32 PressureDeltaMax = Length(DeltaP) / PenTarget.Width;
+                    if(PressureDelta > PressureDeltaMax)
+                    {
+                        PenTarget.Pressure = PenState->Pressure + PressureDeltaMax;
+                    }
+                    else if(PressureDelta < -PressureDeltaMax)
+                    {
+                        PenTarget.Pressure = PenState->Pressure - PressureDeltaMax;
+                    }
+                }
+                
                 OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, PenTarget);
                 
-                if(Inner(DeltaP, Normal) * Inner(PenState->Delta.P, Normal) < 0)
+                r32 NewProjection = Inner(PenTarget.P - PenState->P, Normal);
+                r32 OldProjection = Inner(PenState->Delta.P, Normal);
+                if(((OldProjection <= 0 && NewProjection > 0) || (OldProjection >= 0 && NewProjection < 0)) &&(PenTarget.Mode & PEN_BRUSH_STYLE) != 2)
                 {
                     pen_target OffPen = *PenState;
-                    if(Inner(Normal, PenState->P - PenTarget.P) < 0)
+                    if(NewProjection < 0)
                     {
-                        Normal = -Normal;
+                        OffPen.P += Normal;
                     }
-                    OffPen.P += Normal;
-                    OffPen.Color.a = 0;
+                    else
+                    {
+                        OffPen.P -= Normal;
+                    }
+#if 1
+                    OffPen.Pressure = 0;
+#else
+                    OffPen.Pressure = 1;
+                    OffPen.Color = {1, 0, 0, 1};
+#endif
                     
+                    OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, OffPen);
                     OrcaState->RenderBrushStroke(OrcaState->Canvas, *PenState, OffPen);
                 }
             }

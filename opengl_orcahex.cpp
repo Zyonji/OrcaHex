@@ -18,6 +18,7 @@ struct brush_mode_program
     render_program_base Common;
     
     GLuint BrushModeID;
+    GLuint BrushStyleID;
 };
 struct area_fill_program
 {
@@ -591,6 +592,7 @@ Color = VertColor;
     char *FragmentCode = R"glsl(
 // Fragment code
 uniform vec4 BrushMode;
+uniform float BrushStyle;
 uniform sampler2D Image;
 
 smooth in vec2 FragUV;
@@ -600,7 +602,22 @@ out vec4 FragmentColor;
 
 void main(void)
 {
-float Alpha = Color.w * clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
+float Alpha;
+ if(BrushStyle > 2.5)
+{
+Alpha = Color.w * clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
+} 
+else
+{
+if(FragUV.x + BrushStyle > 0)
+{
+Alpha = 0.5 * Color.w * (1 + cos(FragUV.x * 3.1415926535897932384626433832795));
+}
+else
+{
+ Alpha = Color.w * clamp(1.0 + FragUV.x * FragUV.y, 0.0, 1.0);
+}
+}
 
 vec3 Lab0 = ConvertRGBToLab(Color.xyz);
      vec3 Lab1 = ConvertRGBToLab(texelFetch(Image, ivec2(gl_FragCoord.xy), 0).xyz);
@@ -617,6 +634,7 @@ vec3 Lab0 = ConvertRGBToLab(Color.xyz);
     GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
     
     Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
+    Result->BrushStyleID = glGetUniformLocation(Program, "BrushStyle");
     
     return(Program);
 }
@@ -802,12 +820,13 @@ OpenGLProgramBegin(render_program_base *Program, m4x4 Transform)
 }
 
 internal void
-OpenGLProgramBegin(brush_mode_program *Program, m4x4 Transform, v4 BrushMode)
+OpenGLProgramBegin(brush_mode_program *Program, m4x4 Transform, v4 BrushMode, r32 BrushStyle)
 {
     OpenGLProgramBegin(&Program->Common);
     
     glUniformMatrix4fv(Program->Common.TransformID, 1, GL_TRUE, Transform.E[0]);
     glUniform4fv(Program->BrushModeID, 1, BrushMode.E);
+    glUniform1f(Program->BrushStyleID, BrushStyle);
 }
 internal void
 OpenGLProgramEnd(brush_mode_program *Program)
@@ -1229,6 +1248,26 @@ DrawToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
     }
 }
 internal void
+DrawSwitch(open_gl *OpenGL, u32area Area, u32 Toggle)
+{
+    if(Toggle == 3)
+    {
+        DrawTile(OpenGL, Area, {256.0f, 192.0f}, {256.0f, 224.0f}, {288.0f, 192.0f}, {288.0f, 224.0f});
+    }
+    else if(Toggle == 2)
+    {
+        DrawTile(OpenGL, Area, {256.0f, 224.0f}, {256.0f, 256.0f}, {288.0f, 224.0f}, {288.0f, 256.0f});
+    }
+    else if(Toggle == 1)
+    {
+        DrawTile(OpenGL, Area, {256.0f, 256.0f}, {256.0f, 288.0f}, {288.0f, 256.0f}, {288.0f, 288.0f});
+    }
+    else
+    {
+        DrawTile(OpenGL, Area, {256.0f, 288.0f}, {256.0f, 320.0f}, {288.0f, 288.0f}, {288.0f, 320.0f});
+    }
+}
+internal void
 DrawColorToggle(open_gl *OpenGL, u32area Area, b32 Mirrored, b32 Toggle)
 {
     r32 X1, X2, Y1, Y2;
@@ -1353,6 +1392,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     DrawToggle(OpenGL, Menu->PenButtonsToggle, Mode & PEN_BUTTON_MODE_FLIPPED);
     DrawToggle(OpenGL, Menu->AreaFillToggle, Mode & PEN_MODE_AREA_FILL);
     DrawToggle(OpenGL, Menu->ResizeToggle, Mode & PEN_MODE_RESIZE);
+    DrawSwitch(OpenGL, Menu->BrushStyleSwitch, Mode & PEN_BRUSH_STYLE);
     
     DrawColorToggle(OpenGL, Menu->ColorButtonA, true, Mode & COLOR_MODE_PRESSURE);
     DrawColorToggle(OpenGL, Menu->ColorButtonB, false, !(Mode & COLOR_MODE_PRESSURE));
@@ -1370,8 +1410,6 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
         glScissor(Menu->L.x + I * Menu->Offset.x, Menu->L.y + I * Menu->Offset.y, Menu->L.Width, Menu->L.Height);
         glClear(GL_COLOR_BUFFER_BIT);
     }
-    glViewport(Menu->LSmooth.x, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
-    glScissor(Menu->LSmooth.x, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
     v4 L00, L01, L10, L11;
     if(Menu->Size.Width > Menu->Size.Height)
     {
@@ -1379,6 +1417,16 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
         L01 = {0, Lab.y, Lab.z, 1};
         L10 = {1, Lab.y, Lab.z, 1};
         L11 = {1, Lab.y, Lab.z, 1};
+        
+        glViewport(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, Menu->LSmooth.Width, Menu->LSmooth.Height);
+        glScissor(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, Menu->LSmooth.Width, Menu->LSmooth.Height);
+        glClearColor(0.9, 0.9, 0.9, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        u32 WidthPortion = Menu->LSmooth.Width - (u32)(Lab.x * (r32)Menu->LSmooth.Width);
+        glViewport(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, WidthPortion, Menu->LSmooth.Height);
+        glScissor(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, WidthPortion, Menu->LSmooth.Height);
+        glClearColor(0.7, 0.7, 0.7, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
     }
     else
     {
@@ -1386,7 +1434,19 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
         L01 = {0, Lab.y, Lab.z, 1};
         L10 = {1, Lab.y, Lab.z, 1};
         L11 = {0, Lab.y, Lab.z, 1};
+        
+        glViewport(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
+        glScissor(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
+        glClearColor(0.7, 0.7, 0.7, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        u32 HeightPortion = (u32)(Lab.x * (r32)Menu->LSmooth.Height);
+        glViewport(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, HeightPortion);
+        glScissor(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, HeightPortion);
+        glClearColor(0.9, 0.9, 0.9, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
     }
+    glViewport(Menu->LSmooth.x, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
+    glScissor(Menu->LSmooth.x, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
     common_vertex Vertices[] =
     {
         {{ 1,  1, 0, 1}, { 0, 0}, L00},
@@ -1400,7 +1460,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
     OpenGLProgramEnd(&OpenGL->LabDrawProgram);
     
-    
+    u32area Gap = Menu->a;
     if(Mode & MENU_MODE_AB)
     {
         v4 a00, a01, a10, a11, b00, b01, b10, b11;
@@ -1416,6 +1476,23 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             b01 = {Lab.x, Lab.y - Width, -Limit, 1};
             b10 = {Lab.x, Lab.y + Width,  Limit, 1};
             b11 = {Lab.x, Lab.y - Width,  Limit, 1};
+            
+            Gap.y = Menu->a.y + Menu->a.Height;
+            Gap.Height = (Menu->b.y - Gap.y) / 2;
+            glViewport(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
+            glScissor(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 APortion = (u32)(0.5f * (1 - Lab.y / Limit) * Gap.Width);
+            glViewport(Gap.x, Gap.y, APortion, Gap.Height);
+            glScissor(Gap.x, Gap.y, APortion, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 BPortion = (u32)(0.5f * (1 - Lab.z / Limit) * Gap.Width);
+            glViewport(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
+            glScissor(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
         else
         {
@@ -1428,6 +1505,23 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             b01 = {Lab.x, Lab.y + Width, -Limit, 1};
             b10 = {Lab.x, Lab.y - Width,  Limit, 1};
             b11 = {Lab.x, Lab.y - Width, -Limit, 1};
+            
+            Gap.x = Menu->a.x + Menu->a.Width;
+            Gap.Width = (Menu->b.x - Gap.x) / 2;
+            glViewport(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
+            glScissor(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 APortion = (u32)(0.5f * (1 + Lab.y / Limit) * Gap.Height);
+            glViewport(Gap.x, Gap.y, Gap.Width, APortion);
+            glScissor(Gap.x, Gap.y, Gap.Width, APortion);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 BPortion = (u32)(0.5f * (1 + Lab.z / Limit) * Gap.Height);
+            glViewport(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
+            glScissor(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
         
         glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
@@ -1464,9 +1558,11 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     {
         v4 a00, a01, a10, a11, b00, b01, b10, b11;
         v3 Lch = {Lab.x, Length(Lab.yz), (r32)atan2(Lab.z, Lab.y)};
+        b32 Flipped = false;
         if(Lch.z < 0)
         {
             Lch.z += Pi32;
+            Flipped = true;
         }
         r32 Limit = GetABLimit(Color.xyz);
         if(Menu->Size.Width > Menu->Size.Height)
@@ -1480,6 +1576,31 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             b01 = {Lch.x, Lch.y - Width, 2 * Pi32, 1};
             b10 = {Lch.x, Lch.y + Width, 0, 1};
             b11 = {Lch.x, Lch.y - Width, 0, 1};
+            
+            Gap.y = Menu->a.y + Menu->a.Height;
+            Gap.Height = (Menu->b.y - Gap.y) / 2;
+            glViewport(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
+            glScissor(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 APortion = (u32)(0.5f * (1 - Lch.y / Limit) * Gap.Width);
+            if(Flipped)
+            {
+                APortion = Gap.Width - APortion;
+            }
+            glViewport(Gap.x, Gap.y, APortion, Gap.Height);
+            glScissor(Gap.x, Gap.y, APortion, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 BPortion = (u32)(0.5f * (Lch.z / Pi32) * Gap.Width);
+            if(Flipped)
+            {
+                BPortion += (u32)(0.5f * Gap.Width);
+            }
+            glViewport(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
+            glScissor(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
         else
         {
@@ -1492,6 +1613,31 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             b01 = {Lch.x, Lch.y + Width, 2 * Pi32, 1};
             b10 = {Lch.x, Lch.y - Width, 0, 1};
             b11 = {Lch.x, Lch.y - Width, 2 * Pi32, 1};
+            
+            Gap.x = Menu->a.x + Menu->a.Width;
+            Gap.Width = (Menu->b.x - Gap.x) / 2;
+            glViewport(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
+            glScissor(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
+            glClearColor(0.7, 0.7, 0.7, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 APortion = (u32)(0.5f * (1 + Lch.y / Limit) * Gap.Height);
+            if(Flipped)
+            {
+                APortion = Gap.Height - APortion;
+            }
+            glViewport(Gap.x, Gap.y, Gap.Width, APortion);
+            glScissor(Gap.x, Gap.y, Gap.Width, APortion);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            u32 BPortion = (u32)((1 - 0.5f * (Lch.z / Pi32)) * Gap.Height);
+            if(Flipped)
+            {
+                BPortion -= (u32)(0.5f * Gap.Height);
+            }
+            glViewport(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
+            glScissor(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
+            glClearColor(0.9, 0.9, 0.9, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
         glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
         glScissor(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
@@ -1587,7 +1733,7 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
     
-    OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode);
+    OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE));
     glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
     OpenGLProgramEnd(&OpenGL->BrushModeProgram);
@@ -1601,6 +1747,7 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     OpenGLProgramEnd(&OpenGL->StaticTransferPixelsProgram);
 #endif
 }
+
 internal void
 RenderAreaFlip(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_target NewPen, v2 Origin, v2 Spread, v4 Color, u32 Step)
 {
@@ -1967,7 +2114,7 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
             (s32)((PenState.P.y / Canvas.Size.Height + 0.5f) * 1080)
         };
         r32 HalfWidth = 0.5f * PenState.Width;
-        v2 Normal = {sinf(PenState.PointRadians), cosf(PenState.PointRadians)};
+        v2 Normal = {sinf(PenState.Radians), cosf(PenState.Radians)};
         
         OpenGLProgramBegin(&OpenGL->DisplayProgram, Transform, Cursor, 1080.0f / (r32)Canvas.Size.Height * HalfWidth, Normal);
         glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);

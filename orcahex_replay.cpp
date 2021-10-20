@@ -115,7 +115,7 @@ UnpackReplay(replay_state *Target, void *Source, u32 FileSize)
 }
 
 internal void
-AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
+AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular, u32 TargetFramesOfAnimation)
 {
     GlobalReplayModeChange = false;
     
@@ -138,8 +138,7 @@ AnimateReplay(HWND Window, b32 *Alive, b32 SleepIsGranular)
     
     r32 SecondsElapsed;
     r32 TargetSecondsPerFrame = 1.0f / 60.0f;
-    // NOTE(Zyonji): 15 minute long recordings.
-    u32 ReplaysPerFrame = ReplayCountMax / (60 * 60 * 15) + 1;
+    u32 ReplaysPerFrame = ReplayCountMax / TargetFramesOfAnimation;
     LARGE_INTEGER FrameStart;
     LARGE_INTEGER CurrentCounter;
     QueryPerformanceCounter(&FrameStart);
