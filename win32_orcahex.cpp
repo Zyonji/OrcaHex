@@ -632,8 +632,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Y -= Gap + Block / 2;
         Menu->PenButtonsToggle = {Gap, Y, Block / 2, Block / 2};
         Menu->TiltToggle = {2 * Gap + Block / 2, Y, Block / 2, Block / 2};
-        Menu->AreaFillToggle = {4 * Gap + Block, Y, Block / 2, Block / 2};
-        Menu->ResizeToggle = {5 * Gap + Block * 3 / 2, Y, Block / 2, Block / 2};
+        Menu->LinePenToggle = {3 * Gap + Block, Y, Block / 2, Block / 2};
         Menu->BrushStyleSwitch = {7 * Gap + Block * 2, Y, Block / 2, Block / 2};
         Y -= Gap + Block;
         Menu->ColorA = {2 * Gap + Block / 2, Y, Block, Block};
@@ -695,8 +694,7 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         X += Gap + Block;
         Menu->PenButtonsToggle = {X, Gap, Block / 2, Block / 2};
         Menu->TiltToggle = {X, 2 * Gap + Block / 2, Block / 2, Block / 2};
-        Menu->AreaFillToggle = {X, 4 * Gap + Block, Block / 2, Block / 2};
-        Menu->ResizeToggle = {X, 5 * Gap + Block * 3 / 2, Block / 2, Block / 2};
+        Menu->LinePenToggle = {X, 3 * Gap + Block, Block / 2, Block / 2};
         Menu->BrushStyleSwitch = {X, 7 * Gap + Block * 2, Block / 2, Block / 2};
         X += Gap + Block / 2;
         Menu->ColorA = {X, 2 * Gap + Block / 2, Block, Block};
@@ -849,11 +847,6 @@ CycleStreamMonitor(HMONITOR Monitor, HDC DevideContext, LPRECT MonitorRect, LPAR
     // TODO(Zyonji): It doesn't work if the last one is the current window position, got to press F12 again in that case.
 }
 
-RESIZE_CANVAS(ResizeCanvas)
-{
-    ResizeCanvas(&OrcaState->OpenGL, Canvas, Resize, &OrcaState->OpenGL.CanvasFramebuffer, &OrcaState->OpenGL.SwapFramebuffer);
-}
-
 PICK_COLOR(PickColor)
 {
     return(PickColor(&OrcaState->OpenGL, P));
@@ -866,9 +859,9 @@ RENDER_BRUSH_STROKE(RenderBrushStroke)
 {
     RenderBrushStroke(&OrcaState->OpenGL, Canvas, OldPen, NewPen);
 }
-RENDER_AREA_FLIP(RenderAreaFlip)
+RENDER_LINE(RenderLine)
 {
-    RenderAreaFlip(&OrcaState->OpenGL, Canvas, OldPen, NewPen, Origin, Spread, Color, Step);
+    RenderLine(&OrcaState->OpenGL, Canvas, NextPen);
 }
 
 LRESULT CALLBACK
@@ -1246,8 +1239,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
             OrcaState->PickColor = CPUPickColor;
             OrcaState->UpdateMenu = CPUUpdateMenu;
             OrcaState->RenderBrushStroke = CPURenderBrushStroke;
-            OrcaState->RenderAreaFlip = CPURenderAreaFlip;
-            OrcaState->ResizeCanvas = CPUResizeCanvas;
+            OrcaState->RenderLine = CPURenderLine;
             
             OrcaState->SleepIsGranular = SleepIsGranular;
             
@@ -1279,8 +1271,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         OrcaState->PickColor = PickColor;
                         OrcaState->UpdateMenu = UpdateMenu;
                         OrcaState->RenderBrushStroke = RenderBrushStroke;
-                        OrcaState->RenderAreaFlip = RenderAreaFlip;
-                        OrcaState->ResizeCanvas = ResizeCanvas;
+                        OrcaState->RenderLine = RenderLine;
                         
                         OrcaState->Map.Window = Window;
                         ComputeTabletMapping(&OrcaState->Map);

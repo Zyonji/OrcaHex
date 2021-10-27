@@ -20,16 +20,20 @@ struct brush_mode_program
     GLuint BrushModeID;
     GLuint BrushStyleID;
 };
-struct area_fill_program
+struct line_mode_program
 {
     render_program_base Common;
     
-    GLuint ImageID;
-    GLuint MaskID;
-    
-    GLuint RadiusID;
-    GLuint CenterID;
     GLuint BrushModeID;
+    GLuint BrushStyleID;
+    GLuint OriginID;
+    GLuint TargetID;
+    GLuint Normal1ID;
+    GLuint Normal2ID;
+    GLuint Color1ID;
+    GLuint Color2ID;
+    GLuint Radius1ID;
+    GLuint Radius2ID;
 };
 struct display_program
 {
@@ -51,15 +55,15 @@ struct open_gl
     b32 TESTReferenceOverlay;
     HGLRC RenderingContext;
     
-    render_program_base VisualTransparency;
-    render_program_base TransferPixelsProgram;
-    render_program_base StaticTransferPixelsProgram;
-    render_program_base BasicDrawProgram;
-    render_program_base LabDrawProgram;
-    render_program_base LchDrawProgram;
-    brush_mode_program  BrushModeProgram;
-    area_fill_program   AreaFillProgram;
-    display_program     DisplayProgram;
+    render_program_base        VisualTransparency;
+    render_program_base        TransferPixelsProgram;
+    render_program_base        StaticTransferPixelsProgram;
+    render_program_base        BasicDrawProgram;
+    render_program_base        LabDrawProgram;
+    render_program_base        LchDrawProgram;
+    brush_mode_program         BrushModeProgram;
+    line_mode_program          LineModeProgram;
+    display_program            DisplayProgram;
     
     frame_buffer DisplayFramebuffer;
     frame_buffer CanvasFramebuffer;
@@ -603,7 +607,7 @@ out vec4 FragmentColor;
 void main(void)
 {
 float Alpha;
- if(BrushStyle > 2.5)
+ if(BrushStyle > 1.5)
 {
 Alpha = Color.w * clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
 } 
@@ -638,6 +642,112 @@ vec3 Lab0 = ConvertRGBToLab(Color.xyz);
     
     return(Program);
 }
+internal GLuint
+CompileLineMode(open_gl *OpenGL, line_mode_program *Result)
+{
+    char *VertexCode = R"glsl(
+// Vertex code
+uniform mat4 Transform;
+
+in vec4 VertP;
+in vec2 VertUV;
+in vec4 VertColor;
+
+void main(void)
+{
+vec4 Position = Transform * VertP;
+gl_Position = Position;
+}
+)glsl";
+    
+    char *FragmentCode = R"glsl(
+// Fragment code
+uniform vec4 BrushMode;
+uniform float BrushStyle;
+uniform vec2 Origin;
+uniform vec2 Target;
+uniform vec2 Normal1;
+uniform vec2 Normal2;
+  uniform vec4 Color1;
+uniform vec4 Color2;
+uniform float Radius1;
+uniform float Radius2;
+uniform sampler2D Image;
+
+in vec4 gl_FragCoord;
+
+out vec4 FragmentColor;
+
+void main(void)
+{
+ float Ignore = 1;
+float Alpha;
+vec2 FragP = gl_FragCoord.xy;
+vec2 Point = FragP - Origin;
+vec2 Line = Target - Origin;
+float Interpolator = clamp(dot(Point, Line) / dot(Line, Line), 0.0, 1.0);
+ vec4 Color = mix(Color1, Color2, Interpolator);
+float Radius = mix(Radius1, Radius2, Interpolator);
+float Distance = length(Point - Interpolator * Line);
+float NormalizedDistance = clamp(Distance / Radius, 0.0, 1.0);
+
+ if(BrushStyle > 1.5)
+{
+Alpha = Color.w * clamp(Radius - Distance, 0.0, 1.0);
+} 
+else
+{
+if(BrushStyle > 0)
+{
+Alpha = 0.5 * Color.w * (1 + cos(NormalizedDistance * 3.1415926535897932384626433832795));
+}
+else
+{
+ Alpha = Color.w * (1 - NormalizedDistance);
+}
+}
+
+if(dot(Point, Normal1) < 0)
+{
+Ignore = -Ignore;
+}
+if(dot(FragP - Target, Normal2) >= 0)
+{
+Ignore = -Ignore;
+}
+if(Ignore < 0)
+{
+Alpha = 0;
+}
+
+vec3 Lab0 = ConvertRGBToLab(Color.xyz);
+     vec3 Lab1 = ConvertRGBToLab(texelFetch(Image, ivec2(gl_FragCoord.xy), 0).xyz);
+     
+     vec3 BlendMode = vec3(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y);
+     vec3 Lab = mix(Lab1, Lab0, BlendMode);
+     
+    vec3 RGB = ConvertLabToRGB(Lab);
+    
+     FragmentColor = vec4(RGB, 1);
+     }
+)glsl";
+    
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
+    
+    Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
+    Result->BrushStyleID = glGetUniformLocation(Program, "BrushStyle");
+    Result->OriginID = glGetUniformLocation(Program, "Origin");
+    Result->TargetID = glGetUniformLocation(Program, "Target");
+    Result->Normal1ID = glGetUniformLocation(Program, "Normal1");
+    Result->Normal2ID = glGetUniformLocation(Program, "Normal2");
+    Result->Color1ID = glGetUniformLocation(Program, "Color1");
+    Result->Color2ID = glGetUniformLocation(Program, "Color2");
+    Result->Radius1ID = glGetUniformLocation(Program, "Radius1");
+    Result->Radius2ID = glGetUniformLocation(Program, "Radius2");
+    
+    return(Program);
+}
+#if 0
 internal GLuint
 CompileAreaFill(open_gl *OpenGL, area_fill_program *Result)
 {
@@ -698,6 +808,7 @@ vec3 Lab0 = ConvertRGBToLab(texture(Image, FragUV).xyz);
     
     return(Program);
 }
+#endif
 
 internal GLuint
 CompileDisplay(open_gl *OpenGL, display_program *Result)
@@ -835,20 +946,24 @@ OpenGLProgramEnd(brush_mode_program *Program)
 }
 
 internal void
-OpenGLProgramBegin(area_fill_program *Program, m4x4 Transform, v4 BrushMode, v2 Center, v2 Radius)
+OpenGLProgramBegin(line_mode_program *Program, m4x4 Transform, v4 BrushMode, r32 BrushStyle, v2 Origin, v2 Target, v2 Normal1, v2 Normal2, v4 Color1, v4 Color2, r32 Radius1, r32 Radius2)
 {
     OpenGLProgramBegin(&Program->Common);
     
-    glUniform1i(Program->ImageID, 0);
-    glUniform1i(Program->MaskID,  1);
-    
     glUniformMatrix4fv(Program->Common.TransformID, 1, GL_TRUE, Transform.E[0]);
     glUniform4fv(Program->BrushModeID, 1, BrushMode.E);
-    glUniform2fv(Program->CenterID, 1, Center.E);
-    glUniform2fv(Program->RadiusID, 1, Radius.E);
+    glUniform1f(Program->BrushStyleID, BrushStyle);
+    glUniform2fv(Program->OriginID, 1, Origin.E);
+    glUniform2fv(Program->TargetID, 1, Target.E);
+    glUniform2fv(Program->Normal1ID, 1, Normal1.E);
+    glUniform2fv(Program->Normal2ID, 1, Normal2.E);
+    glUniform4fv(Program->Color1ID, 1, Color1.E);
+    glUniform4fv(Program->Color2ID, 1, Color2.E);
+    glUniform1f(Program->Radius1ID, Radius1);
+    glUniform1f(Program->Radius2ID, Radius2);
 }
 internal void
-OpenGLProgramEnd(area_fill_program *Program)
+OpenGLProgramEnd(line_mode_program *Program)
 {
     OpenGLProgramEnd(&Program->Common);
 }
@@ -931,9 +1046,9 @@ OpenGLInitPrograms(open_gl *OpenGL)
         LogError("Unable to compile the brush stroke renderer.", "OpenGL");
         Return = false;
     }
-    if(!CompileAreaFill(OpenGL,             &OpenGL->AreaFillProgram))
+    if(!CompileLineMode(OpenGL,      &OpenGL->LineModeProgram))
     {
-        LogError("Unable to compile the area fill renderer.", "OpenGL");
+        LogError("Unable to compile the line stroke renderer.", "OpenGL");
         Return = false;
     }
     if(!CompileDisplay(OpenGL,              &OpenGL->DisplayProgram))
@@ -1024,61 +1139,6 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
         glClearColor(0.7, 0.7, 0.7, 1);
         glClear(GL_COLOR_BUFFER_BIT);
     }
-}
-
-internal void
-ResizeCanvas(open_gl *OpenGL, canvas_state *Canvas, resize_state Resize, frame_buffer *TargetBuffer, frame_buffer *SwapBuffer)
-{
-    Canvas->Size.Width += (s32)(Resize.Right - Resize.Left);
-    Canvas->Size.Height += (s32)(Resize.Top - Resize.Bottom);
-    
-    Canvas->Center.x += 0.5f * Canvas->Scale * (Resize.Right + Resize.Left);
-    Canvas->Center.y += 0.5f * Canvas->Scale * (Resize.Top + Resize.Bottom);
-    
-    frame_buffer NewTargetBuffer = CreateFramebuffer(OpenGL, Canvas->Size.Width, Canvas->Size.Height, 0);
-    frame_buffer NewSwapBuffer = CreateFramebuffer(OpenGL, Canvas->Size.Width, Canvas->Size.Height, 0);
-    
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, NewTargetBuffer.FramebufferHandle);
-    glViewport(0, 0, NewTargetBuffer.Size.Width, NewTargetBuffer.Size.Height);
-    glScissor(0, 0, NewTargetBuffer.Size.Width, NewTargetBuffer.Size.Height);
-    
-    m4x4 Transform = {
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0, 
-        0, 0, 0, 1,};
-    
-    r32 RShift = Resize.Right  / (r32)TargetBuffer->Size.Width;
-    r32 LShift = Resize.Left   / (r32)TargetBuffer->Size.Width;
-    r32 TShift = Resize.Top    / (r32)TargetBuffer->Size.Height;
-    r32 BShift = Resize.Bottom / (r32)TargetBuffer->Size.Height;
-    common_vertex Vertices[] =
-    {
-        {{-1,  1, 0, 1}, {0 + LShift, 1 + TShift}, {}},
-        {{-1, -1, 0, 1}, {0 + LShift, 0 + BShift}, {}},
-        {{ 1,  1, 0, 1}, {1 + RShift, 1 + TShift}, {}},
-        {{ 1, -1, 0, 1}, {1 + RShift, 0 + BShift}, {}},
-    };
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    glBindTexture(GL_TEXTURE_2D, TargetBuffer->ColorHandle);
-    OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    
-    if(TargetBuffer)
-    {
-        FreeFramebuffer(TargetBuffer);
-    }
-    if(SwapBuffer)
-    {
-        FreeFramebuffer(SwapBuffer);
-    }
-    
-    *TargetBuffer = NewTargetBuffer;
-    *SwapBuffer = NewSwapBuffer;
 }
 
 internal v4
@@ -1250,13 +1310,9 @@ DrawToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
 internal void
 DrawSwitch(open_gl *OpenGL, u32area Area, u32 Toggle)
 {
-    if(Toggle == 3)
+    if(Toggle == 2)
     {
         DrawTile(OpenGL, Area, {256.0f, 192.0f}, {256.0f, 224.0f}, {288.0f, 192.0f}, {288.0f, 224.0f});
-    }
-    else if(Toggle == 2)
-    {
-        DrawTile(OpenGL, Area, {256.0f, 224.0f}, {256.0f, 256.0f}, {288.0f, 224.0f}, {288.0f, 256.0f});
     }
     else if(Toggle == 1)
     {
@@ -1389,9 +1445,8 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     glDisable(GL_BLEND);
     
     DrawToggle(OpenGL, Menu->TiltToggle, Mode & TILT_MODE_DISABLE);
+    DrawToggle(OpenGL, Menu->LinePenToggle, Mode & LINE_PEN_MODE);
     DrawToggle(OpenGL, Menu->PenButtonsToggle, Mode & PEN_BUTTON_MODE_FLIPPED);
-    DrawToggle(OpenGL, Menu->AreaFillToggle, Mode & PEN_MODE_AREA_FILL);
-    DrawToggle(OpenGL, Menu->ResizeToggle, Mode & PEN_MODE_RESIZE);
     DrawSwitch(OpenGL, Menu->BrushStyleSwitch, Mode & PEN_BRUSH_STYLE);
     
     DrawColorToggle(OpenGL, Menu->ColorButtonA, true, Mode & COLOR_MODE_PRESSURE);
@@ -1748,83 +1803,154 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
 #endif
 }
 
+// TODO(Zyonji): To make it easier to test out, I gave this an internal state with previous points.  
 internal void
-RenderAreaFlip(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_target NewPen, v2 Origin, v2 Spread, v4 Color, u32 Step)
+RenderLine(open_gl *OpenGL, canvas_state Canvas, pen_target NextPen)
 {
-    common_vertex Vertices[] =
-    {
-        {{  Origin.x,   Origin.y, 0, 1}, {}, Color},
-        {{OldPen.P.x, OldPen.P.y, 0, 1}, {}, Color},
-        {{NewPen.P.x, NewPen.P.y, 0, 1}, {}, Color},
-    };
+    local_persist v2 PreviousP;
+    local_persist v2 OldP;
+    local_persist v2 NewP;
+    local_persist v4 OldColor;
+    local_persist v4 NewColor;
+    local_persist r32 OldRadius;
+    local_persist r32 NewRadius;
     
-    m4x4 Transform = {
-        (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
-        0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
-        0, 0, 1, 0, 
-        0, 0, 0, 1,};
+    local_persist v2 OldV;
     
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
-    glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-    glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-    if(Step == 0)
+    local_persist u32 SegmentLength;
+    
+    u32 Mode = NextPen.Mode;
+    v2 Center = {(0.5f * (r32)Canvas.Size.Width), (0.5f * (r32)Canvas.Size.Height)};
+    v2 NextP = NextPen.P;
+    
+    if(NextPen.Pressure == 0 && NewP.x == NextP.x && NewP.y == NextP.y)
     {
-        glClearColor(Color.r, Color.g, Color.b, 0.0);
-        glClear(GL_COLOR_BUFFER_BIT);
+        NewColor.a = 0;
+        SegmentLength = 4;
     }
     
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-    
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ZERO);
-    
-    OpenGLProgramBegin(&OpenGL->BasicDrawProgram, Transform);
-    glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BasicDrawProgram);
-    
-    glDisable(GL_BLEND);
-    
-    if(Step == 2)
+    if(NextPen.Pressure == 0 || NewP.x != NextP.x || NewP.y != NextP.y)
     {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
-        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
-        
-        glActiveTexture(GL_TEXTURE0 + 1);
-        glBindTexture(GL_TEXTURE_2D, OpenGL->SwapFramebuffer.ColorHandle);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glActiveTexture(GL_TEXTURE0 + 0);
-        
-        v4 BrushMode = {};
-        if(NewPen.Mode & COLOR_MODE_LUMINANCE)
+        if(SegmentLength < 2)
         {
-            BrushMode.x = 1;
+            v2 Vector = NewP - OldP;
+            v2 V = Normalize(Perp(Vector));
+            
+            OldP = NewP;
+            NewP = NextP;
+            OldRadius = NewRadius;
+            NewRadius = 0.5f * NextPen.Width;
+            
+            OldColor = NewColor;
+            NewColor = NextPen.Color;
+            if(Mode & COLOR_MODE_PRESSURE)
+            {
+                NewColor.a *= NextPen.Pressure;
+            }
+            else
+            {
+                NewColor.a = NextPen.Pressure;
+            }
+            
+            SegmentLength++;
         }
-        if(NewPen.Mode & COLOR_MODE_CHROMA)
+        else
         {
-            BrushMode.y = 1;
+            v2 Vector = NewP - OldP;
+            v2 NextVector = NextP - NewP;
+            v2 NextDir = Normalize(NextVector);
+            v2 M = Normalize(Vector);
+            v2 N = Perp(M);
+            v2 V = Normalize(Perp(Vector));
+            r32 NextRadius = 0.5f * NextPen.Width;
+            
+            if(SegmentLength == 2)
+            {
+                OldV = M;
+            }
+            
+            v2 NewV = Normalize(M + NextDir);
+            if(NewV.x * V.x + NewV.y * V.y == 0)
+            {
+                NewV = M;
+            }
+            if(Inner(NewV, M) < 0)
+            {
+                NewV = -NewV;
+            }
+            
+            common_vertex Vertices[] =
+            {
+                {{NewP.x + NewRadius*( M.x+N.x), NewP.y + NewRadius*( M.y+N.y), 0, 1}, {}, {}},
+                {{OldP.x + OldRadius*(-M.x+N.x), OldP.y + OldRadius*(-M.y+N.y), 0, 1}, {}, {}},
+                {{NewP.x + NewRadius*( M.x-N.x), NewP.y + NewRadius*( M.y-N.y), 0, 1}, {}, {}},
+                {{OldP.x + OldRadius*(-M.x-N.x), OldP.y + OldRadius*(-M.y-N.y), 0, 1}, {}, {}},
+            };
+            
+            m4x4 Transform = {
+                (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
+                0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
+                0, 0, 1, 0, 
+                0, 0, 0, 1,};
+            // TODO(Zyonji): Figure out how to implement the different alpha modes. Probably through the Transferprogram
+            v4 BrushMode = {};
+            if(Mode & COLOR_MODE_LUMINANCE)
+            {
+                BrushMode.x = 1;
+            }
+            if(Mode & COLOR_MODE_CHROMA)
+            {
+                BrushMode.y = 1;
+            }
+            if(Mode & COLOR_MODE_ALPHA)
+            {
+                BrushMode.z = 1;
+            }
+            
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
+            glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+            glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+            glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+            
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+            
+            OpenGLProgramBegin(&OpenGL->LineModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE), OldP + Center, NewP + Center, OldV, NewV, OldColor, NewColor, OldRadius, NewRadius);
+            glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+            OpenGLProgramEnd(&OpenGL->LineModeProgram);
+            
+            PreviousP = OldP;
+            OldP = NewP;
+            NewP = NextP;
+            OldRadius = NewRadius;
+            NewRadius = NextRadius;
+            OldV = NewV;
+            
+            OldColor = NewColor;
+            NewColor = NextPen.Color;
+            if(Mode & COLOR_MODE_PRESSURE)
+            {
+                NewColor.a *= NextPen.Pressure;
+            }
+            else
+            {
+                NewColor.a = NextPen.Pressure;
+            }
+            
+            if(SegmentLength == 4)
+            {
+                SegmentLength = 0;
+            }
+            else if(NextPen.Pressure <= 0)
+            {
+                SegmentLength = 4;
+                RenderLine(OpenGL, Canvas, NextPen);
+            }
+            else
+            {
+                SegmentLength = 3;
+            }
         }
-        if(NewPen.Mode & COLOR_MODE_ALPHA)
-        {
-            BrushMode.z = 1;
-        }
-        
-        v2 Center = {0.5f + Origin.x / (r32)Canvas.Size.Width, 0.5f + Origin.y / (r32)Canvas.Size.Height};
-        Transform = {
-            1, 0, 0, 0, 
-            0, 1, 0, 0, 
-            0, 0, 1, 0, 
-            0, 0, 0, 1,};
-        
-        OpenGLProgramBegin(&OpenGL->AreaFillProgram, Transform, BrushMode, Center, Spread);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        OpenGLProgramEnd(&OpenGL->AreaFillProgram);
-        
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
-        glClearColor(0, 0, 0, 0.0);
-        glClear(GL_COLOR_BUFFER_BIT);
     }
 }
 
@@ -1858,41 +1984,10 @@ RenderCanvas(open_gl *OpenGL, canvas_state Canvas, m4x4 Transform, pen_state Pen
         glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
     }
     
-    if(PenState.Mode & PEN_MODE_AREA_FILL)
-    {
-        glActiveTexture(GL_TEXTURE0 + 1);
-        glBindTexture(GL_TEXTURE_2D, OpenGL->SwapFramebuffer.ColorHandle);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glActiveTexture(GL_TEXTURE0 + 0);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        
-        v4 BrushMode = {};
-        if(PenState.Mode & COLOR_MODE_LUMINANCE)
-        {
-            BrushMode.x = 1;
-        }
-        if(PenState.Mode & COLOR_MODE_CHROMA)
-        {
-            BrushMode.y = 1;
-        }
-        if(PenState.Mode & COLOR_MODE_ALPHA)
-        {
-            BrushMode.z = 1;
-        }
-        
-        v2 Center = {0.5f + PenState.Origin.x / (r32)Canvas.Size.Width, 0.5f + PenState.Origin.y / (r32)Canvas.Size.Height};
-        
-        OpenGLProgramBegin(&OpenGL->AreaFillProgram, Transform, BrushMode, Center, PenState.Spread);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        OpenGLProgramEnd(&OpenGL->AreaFillProgram);
-    }
-    else
-    {
-        glGenerateMipmap(GL_TEXTURE_2D);
-        OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
-    }
+    glGenerateMipmap(GL_TEXTURE_2D);
+    OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
     
     glBindTexture(GL_TEXTURE_2D, 0);
 }
@@ -1982,20 +2077,7 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
             0, 0, 1, 0, 
             0, 0, 0, 1,};
         
-        // TODO(Zyonji): Test moving the UV coordinates to implement the cropping tool.
-        r32 RShift = PenState.Resize.Right  / (r32)Canvas.Size.Width;
-        r32 LShift = PenState.Resize.Left   / (r32)Canvas.Size.Width;
-        r32 TShift = PenState.Resize.Top    / (r32)Canvas.Size.Height;
-        r32 BShift = PenState.Resize.Bottom / (r32)Canvas.Size.Height;
-        common_vertex Vertices[] =
-        {
-            {{-1 + 2 * LShift,  1 + 2 * TShift, 0, 1}, {0 + LShift, 1 + TShift}, {}},
-            {{-1 + 2 * LShift, -1 + 2 * BShift, 0, 1}, {0 + LShift, 0 + BShift}, {}},
-            {{ 1 + 2 * RShift,  1 + 2 * TShift, 0, 1}, {1 + RShift, 1 + TShift}, {}},
-            {{ 1 + 2 * RShift, -1 + 2 * BShift, 0, 1}, {1 + RShift, 0 + BShift}, {}},
-        };
-        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
         
         // TODO(Zyonji): Why do I generate those here and in render canvas?
         glGenerateMipmap(GL_TEXTURE_2D);
