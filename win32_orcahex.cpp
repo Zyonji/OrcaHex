@@ -278,6 +278,7 @@ struct win32_orca_state : orca_state
     r32 PerformanceFrequency;
     u64 LastPenTime;
     char IniPath[MAX_PATH];
+    char RefPath[MAX_PATH];
 };
 
 global win32_orca_state *OrcaState;
@@ -518,7 +519,7 @@ InitOpenGL(open_gl *OpenGL, HDC WindowDC)
         
         OpenGL->Initialized = OpenGLInitPrograms(OpenGL);
         OpenGL->RenderingContext = OpenGLRC;
-        OpenGL->TilesetFramebuffer = CreateFramebuffer(OpenGL, TilesWidth, TilesHeight, TilesMemory);
+        OpenGL->TilesetFramebuffer = CreateConvertedFramebuffer(OpenGL, TilesWidth, TilesHeight, TilesMemory);
     }
     else
     {
@@ -557,7 +558,22 @@ CreateBitmap(open_gl *OpenGL, image_data *ImageData)
     
     if(ImageData->Bitmap)
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
+        glViewport(0, 0, ImageData->Width, ImageData->Height);
+        glScissor(0, 0, ImageData->Width, ImageData->Height);
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+        m4x4 Transform = {
+            1, 0, 0, 0, 
+            0, 1, 0, 0, 
+            0, 0, 1, 0, 
+            0, 0, 0, 1,};
+        OpenGLProgramBegin(&OpenGL->ConvertToRGBProgram, Transform);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->ConvertToRGBProgram);
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
         glReadPixels(0, 0, ImageData->Width, ImageData->Height, GL_BGRA, GL_UNSIGNED_BYTE, ImageData->Memory);
     }
 }
@@ -614,10 +630,10 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->New = {Gap, Y, Block, Block};
         Menu->Open = {2 * Gap + Block, Y, Block, Block};
         Menu->Save = {3 * Gap + 2 * Block, Y, Block, Block};
-        Y -= Gap + Block * 3 / 4;
+        Y -= Block * 3 / 4;
         Menu->Time = {0, Y + Block / 4, Menu->Size.Width, Block / 4};
         TimeBorder = {0, Y, Menu->Size.Width, Block * 3 / 4};
-        Y -= Gap + Block;
+        Y -= Block;
         Menu->RotateR = {Gap, Y, Block, Block};
         Menu->OneToOne = {2 * Gap + Block, Y, Block, Block};
         Menu->RotateL = {3 * Gap + 2 * Block, Y, Block, Block};
@@ -650,7 +666,8 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->Offset = {0, (s32)Block};
         Y -= Block / 2;
         Menu->AlphaButton = {2 * Gap + Block / 4, Y, Block, Block / 2};
-        Menu->LButton = {2 * Gap + Block* 7 / 4, Y, Block, Block / 2};
+        Menu->LLimitToggle = {2 * Gap + Block * 5 / 4, Y, Block / 2, Block / 2};
+        Menu->LButton = {2 * Gap + Block * 7 / 4, Y, Block, Block / 2};
         Y -= Gap + Block / 2;
         Menu->abButton = {2 * Gap + Block / 2, Y, 2 * Block, Block / 2};
         Menu->chButton = {Gap, Y, Block / 2, Block / 2};
@@ -676,10 +693,10 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->New = {X, Gap, Block, Block};
         Menu->Open = {X, 2 * Gap + Block, Block, Block};
         Menu->Save = {X, 3 * Gap + 2 * Block, Block, Block};
-        X += Block + Gap;
+        X += Block;
         Menu->Time = {X + Block / 4, 0, Block / 4, Menu->Size.Height};
         TimeBorder = {X, 0, Block * 3 / 4, Menu->Size.Height};
-        X += Gap + Block * 3 / 4;
+        X += Block * 3 / 4;
         Menu->Small = {X, Gap, Block, Block};
         Menu->Minus = {X, 2 * Gap + Block, Block, Block};
         Menu->RotateR = {X, 3 * Gap + 2 * Block, Block, Block};
@@ -712,7 +729,8 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
         Menu->Offset = {-(s32)Block, 0};
         X += Block;
         Menu->AlphaButton = {X, 2 * Gap + Block / 4, Block / 2, Block};
-        Menu->LButton = {X, 2 * Gap + Block* 7 / 4, Block / 2, Block};
+        Menu->LLimitToggle = {X, 2 * Gap + Block * 5 / 4, Block / 2, Block / 2};
+        Menu->LButton = {X, 2 * Gap + Block * 7 / 4, Block / 2, Block};
         X += Gap + Block / 2;
         Menu->abButton = {X, 2 * Gap + Block / 2, Block / 2, 2 * Block};
         Menu->chButton = {X, Gap, Block / 2, Block / 2};
@@ -730,11 +748,13 @@ UpdateDisplayFrameData(open_gl *OpenGL, HWND Window, v2u *DisplaySize, u32area *
     }
     OpenGL->MenuFramebuffer = CreateFramebuffer(OpenGL, Menu->Size.Width, Menu->Size.Height, 0);
     
+    v3 Lab = ConvertRGBToLab({0.9, 0.9, 0.9});
+    
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->MenuFramebuffer.FramebufferHandle);
     glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
     glViewport(0, 0, Menu->Size.Width, Menu->Size.Height);
     glScissor(0, 0, Menu->Size.Width, Menu->Size.Height);
-    glClearColor(0.9, 0.9, 0.9, 1);
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     DrawButtonNew(OpenGL, Menu->New);
     DrawButtonOpen(OpenGL, Menu->Open);
@@ -847,6 +867,124 @@ CycleStreamMonitor(HMONITOR Monitor, HDC DevideContext, LPRECT MonitorRect, LPAR
     // TODO(Zyonji): It doesn't work if the last one is the current window position, got to press F12 again in that case.
 }
 
+internal void
+CycleReferenceImage(HWND Window)
+{
+    if(*OrcaState->RefPath)
+    {
+        char SearchPath[MAX_PATH];
+        char OldFileName[MAX_PATH];
+        WIN32_FIND_DATA SearchResult;
+        HANDLE FindHandle = INVALID_HANDLE_VALUE;
+        
+        char *At = SearchPath;
+        char *From = OrcaState->RefPath;
+        char *Slash = From;
+        while(*Slash)
+        {
+            Slash++;
+        }
+        while(Slash >= From && *Slash != '/' && *Slash != '\\')
+        {
+            --Slash;
+        }
+        while(From <= Slash)
+        {
+            *At++ = *From++;
+        }
+        *At++ = '*';
+        *At++ = 0;
+        At = OldFileName;
+        while(*From)
+        {
+            *At++ = *From++;
+        }
+        *At++ = 0;
+        
+        FindHandle = FindFirstFile(SearchPath, &SearchResult);
+        if(FindHandle != INVALID_HANDLE_VALUE) 
+        {
+            b32 FileFound = false;
+            char NewFileName[MAX_PATH];
+            *NewFileName = 0;
+            
+            do
+            {
+                if(!(SearchResult.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                {
+                    b32 Equal = true;
+                    At = OldFileName;
+                    From = SearchResult.cFileName;
+                    while(*At || *From)
+                    {
+                        if(*At++ != *From++)
+                        {
+                            Equal = false;
+                            break;
+                        }
+                    }
+                    
+                    if(*NewFileName == 0)
+                    {
+                        At = NewFileName;
+                        From = SearchResult.cFileName;
+                        while(*From)
+                        {
+                            *At++ = *From++;
+                        }
+                        *At++ = 0;
+                    }
+                    
+                    if(FileFound)
+                    {
+                        At = NewFileName;
+                        From = SearchResult.cFileName;
+                        while(*From)
+                        {
+                            *At++ = *From++;
+                        }
+                        *At = 0;
+                        break;
+                    }
+                    
+                    if(Equal)
+                    {
+                        FileFound = true;
+                    }
+                }
+            }
+            while(FindNextFile(FindHandle, &SearchResult) != 0);
+            
+            At = Slash;
+            From = NewFileName;
+            At++;
+            while(*From)
+            {
+                *At++ = *From++;
+            }
+            *At = 0;
+            
+            image_data Reference = LoadImageFile(OrcaState->RefPath, OrcaState->MaxId);
+            
+            if(Reference.Bitmap)
+            {
+                OrcaState->Canvas.ReferenceSize = {Reference.Width, Reference.Height};
+                
+                if(OrcaState->OpenGL.ReferenceFramebuffer.FramebufferHandle)
+                {
+                    FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
+                }
+                OrcaState->OpenGL.ReferenceFramebuffer = CreateConvertedFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, Reference.Memory);
+                
+                FreeImage_Unload(Reference.Bitmap);
+            }
+            
+            InvalidateRect(Window, 0, true);
+        }
+        FindClose(FindHandle);
+    }
+}
+
 PICK_COLOR(PickColor)
 {
     return(PickColor(&OrcaState->OpenGL, P));
@@ -861,7 +999,7 @@ RENDER_BRUSH_STROKE(RenderBrushStroke)
 }
 RENDER_LINE(RenderLine)
 {
-    RenderLine(&OrcaState->OpenGL, Canvas, NextPen);
+    RenderLine(&OrcaState->OpenGL, Canvas, OldPen, NextPen);
 }
 
 LRESULT CALLBACK
@@ -1011,11 +1149,10 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                 
                 case VK_F3:
                 {
-                    char FileName[MAX_PATH];
-                    RequestFileChoice(FileName, sizeof(FileName));
-                    if(*FileName)
+                    RequestFileChoice(OrcaState->RefPath, sizeof(OrcaState->RefPath));
+                    if(*OrcaState->RefPath)
                     {
-                        image_data Reference = LoadImageFile(FileName, OrcaState->MaxId);
+                        image_data Reference = LoadImageFile(OrcaState->RefPath, OrcaState->MaxId);
                         
                         if(Reference.Bitmap)
                         {
@@ -1025,14 +1162,18 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                             {
                                 FreeFramebuffer(&OrcaState->OpenGL.ReferenceFramebuffer);
                             }
-                            OrcaState->OpenGL.ReferenceFramebuffer = CreateFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, Reference.Memory);
+                            OrcaState->OpenGL.ReferenceFramebuffer = CreateConvertedFramebuffer(&OrcaState->OpenGL, OrcaState->Canvas.ReferenceSize.x, OrcaState->Canvas.ReferenceSize.y, Reference.Memory);
                             
                             FreeImage_Unload(Reference.Bitmap);
                         }
                         
-                        
                         InvalidateRect(Window, 0, true);
                     }
+                } break;
+                
+                case VK_F4:
+                {
+                    CycleReferenceImage(Window);
                 } break;
                 
                 case VK_F5:
@@ -1040,15 +1181,15 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                     r32 Scale = 1;
                     if(OrcaState->Image.Width > OrcaState->Image.Height)
                     {
-                        Scale = 6000 / (r32)OrcaState->Image.Width;
+                        Scale = 3600 / (r32)OrcaState->Image.Width;
                         OrcaState->Image.Height = (u32)(Scale * OrcaState->Image.Height);
-                        OrcaState->Image.Width = 6000;
+                        OrcaState->Image.Width = 3600;
                     }
                     else
                     {
-                        Scale = 6000 / (r32)OrcaState->Image.Height;
+                        Scale = 3600 / (r32)OrcaState->Image.Height;
                         OrcaState->Image.Width = (u32)(Scale * OrcaState->Image.Width);
-                        OrcaState->Image.Height = 6000;
+                        OrcaState->Image.Height = 3600;
                     }
                     
                     pen_target *Replay = (pen_target *)OrcaState->Replay.Buffer;
@@ -1079,13 +1220,13 @@ MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
                         image_data ImageData = {};
                         if(ImageReference.Width > ImageReference.Height)
                         {
-                            ImageData.Width = 6000;
-                            ImageData.Height = (u32)(6000.0f * (r32)ImageReference.Height / (r32)ImageReference.Width);
+                            ImageData.Width = 3600;
+                            ImageData.Height = (u32)(3600.0f * (r32)ImageReference.Height / (r32)ImageReference.Width);
                         }
                         else
                         {
-                            ImageData.Height = 6000;
-                            ImageData.Width = (u32)(6000.0f * (r32)ImageReference.Width / (r32)ImageReference.Height);
+                            ImageData.Height = 3600;
+                            ImageData.Width = (u32)(3600.0f * (r32)ImageReference.Width / (r32)ImageReference.Height);
                         }
                         
                         ClearReplay(&OrcaState->Replay);
@@ -1298,7 +1439,7 @@ WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, LPSTR CommandLine, int ShowC
                         
 #if 0
                         SetTimer(Window, 1, 60000, (TIMERPROC) 0);
-                        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
+                        OrcaState->CreateNewFile(OrcaState->MaxId, OrcaState->PaintingRegion, 2400, 3600);
 #endif
                         
                         // NOTE(Zyonji): The main Message loop.

@@ -19,17 +19,15 @@ struct brush_mode_program
     
     GLuint BrushModeID;
     GLuint BrushStyleID;
+    GLuint LightLimitID;
+    GLuint DarkLimitID;
 };
 struct line_mode_program
 {
     render_program_base Common;
     
-    GLuint BrushModeID;
-    GLuint BrushStyleID;
     GLuint OriginID;
     GLuint TargetID;
-    GLuint Normal1ID;
-    GLuint Normal2ID;
     GLuint Color1ID;
     GLuint Color2ID;
     GLuint Radius1ID;
@@ -57,11 +55,14 @@ struct open_gl
     
     render_program_base        VisualTransparency;
     render_program_base        TransferPixelsProgram;
+    render_program_base        ConvertToLabProgram;
+    render_program_base        ConvertToRGBProgram;
     render_program_base        StaticTransferPixelsProgram;
     render_program_base        BasicDrawProgram;
     render_program_base        LabDrawProgram;
     render_program_base        LchDrawProgram;
     brush_mode_program         BrushModeProgram;
+    brush_mode_program         BrushAlphaModeProgram;
     line_mode_program          LineModeProgram;
     display_program            DisplayProgram;
     
@@ -137,104 +138,6 @@ OpenGLCreateProgram(char *HeaderCode, char *VertexCode, char *FragmentCode, rend
     return(ProgramID);
 }
 
-#if 0
-vec3 ConvertRGBToLab(vec3 RGB)
-{
-    float r = RGB.r;
-    float g = RGB.g;
-    float b = RGB.b;
-    
-    r = (r > 0.04045) ? pow((r + 0.055) / 1.055, 2.4) : (r / 12.92);
-    g = (g > 0.04045) ? pow((g + 0.055) / 1.055, 2.4) : (g / 12.92);
-    b = (b > 0.04045) ? pow((b + 0.055) / 1.055, 2.4) : (b / 12.92);
-    
-    float x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
-    float y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
-    float z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
-    
-    x = x / 0.95047;
-    y = y / 1.0000;
-    z = z / 1.08883;
-    
-    x = (x > 0.008856) ? pow(x, 1.0 / 3.0) : (7.787 * x + 0.160 / 1.160);
-    y = (y > 0.008856) ? pow(y, 1.0 / 3.0) : (7.787 * y + 0.160 / 1.160);
-    z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
-    
-    float L = (1.160 * y) - 0.160;
-    float a = 5.000 * (x - y);
-    float b = 2.000 * (y - z);
-    
-    vec3 Lab = vec3(L, a, b);
-    
-    return(Lab);
-}
-vec3 ConvertLabToRGB(vec3 Lab)
-{
-    float y = (Lab.x + 0.160) / 1.160;
-    float x = Lab.y / 5.000 + y;
-    float z = y - Lab.z / 2.000;
-    
-    float x3 = x * x * x;
-    float y3 = y * y * y;
-    float z3 = z * z * z;
-    
-    x = ((x3 > 0.008856) ? x3 : ((x - 0.160 / 1.160) / 7.787)) * 0.95047;
-    y = ((y3 > 0.008856) ? y3 : ((y - 0.160 / 1.160) / 7.787)) * 1.000;
-    z = ((z3 > 0.008856) ? z3 : ((z - 0.160 / 1.160) / 7.787)) * 1.08883;
-    
-    float r = x *  3.2404542 + y * -1.5371385 + z * -0.4985314;
-    float g = x * -0.9692660 + y *  1.8760108 + z *  0.0415560;
-    float b = x *  0.0556434 + y * -0.2040259 + z *  1.0572252;
-    
-    r = (r > 0.0031308) ? (1.055 * pow(r, 1 / 2.4) - 0.055) : (12.92 * r);
-    g = (g > 0.0031308) ? (1.055 * pow(g, 1 / 2.4) - 0.055) : (12.92 * g);
-    b = (b > 0.0031308) ? (1.055 * pow(b, 1 / 2.4) - 0.055) : (12.92 * b);
-    
-    vec3 RGB = vec3(r, g, b);
-    
-    return(RGB);
-}
-
-vec3 ConvertRGBToLab(vec3 RGB)
-{
-    mat3 ToXYZ = mat3(20416.0 / 41085.0, 319.0 / 1245.0, 957.0 / 41085.0, 2533.0 / 7470.0, 2533.0 / 3735.0, 2533.0 / 22410.0, 245.0 / 1494.0, 49.0 / 747.0, 3871.0 / 4482.0);
-    
-    vec3 Linear = vec3(pow(RGB.x, 2.2), pow(RGB.y, 2.2), pow(RGB.z, 2.2));
-    vec3 XYZ = ToXYZ * Linear;
-    vec3 Cubic = vec3(pow(XYZ.x, 1.0 / 2.4), pow(XYZ.y, 1.0 / 2.4), pow(XYZ.z, 1.0 / 2.4));
-    vec3 Lab = vec3(Cubic.y, Cubic.x - Cubic.y, Cubic.y - Cubic.z);
-    
-    return(Lab);
-}
-vec3 ConvertLabToRGB(vec3 Lab)
-{
-    mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
-    
-    vec3 Cubic = vec3(Lab.y + Lab.x, Lab.x, Lab.x - Lab.z);
-    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
-    vec3 Linear = ToRGB * XYZ;
-    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
-    
-#if 0
-    // NOTE(Zyonji): For the fast algorithm, it should be enough to just clamp values.
-    vec3 Grey = ToRGB * vec3(pow(Cubic.y, 2.4));
-    vec3 Vector = Grey - Linear;
-    vec3 ScaleA = vec3(Vector.x / Grey.x, Vector.y / Grey.y, Vector.z / Grey.z);
-    vec3 ScaleB = vec3(-Vector.x / (1 - Grey.x), -Vector.y / (1 - Grey.y), -Vector.z / (1 - Grey.z));
-    float Distance = max(max(max(ScaleA.x, ScaleB.x), max(ScaleA.y, ScaleB.y)), max(ScaleA.z, ScaleB.z));
-    if(Distance > 1.0)
-    {
-        Linear = Grey - (Vector / Distance);
-    }
-    
-    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
-#endif
-    
-    return(RGB);
-}
-
-#endif
-
 global char *GlobalBasicShaderHeaderCode = R"glsl(
 #version 330
 
@@ -264,15 +167,16 @@ vec3 ConvertRGBToLab(vec3 RGB)
     y = (y > 0.008856) ? pow(y, 1.0 / 3.0) : (7.787 * y + 0.160 / 1.160);
     z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
     
-    vec3 Lab = vec3((1.160 * y) - 0.160, 5.000 * (x - y), 2.000 * (y - z));
+    vec3 Lab = vec3((1.160 * y) - 0.160, 1.25 * (x - y) + 0.5, 0.5 * (y - z) + 0.5);
     
     return(Lab);
 }
+
 vec3 ConvertLabToRGB(vec3 Lab)
 {
     float y = (Lab.x + 0.160) / 1.160;
-    float x = Lab.y / 5.000 + y;
-    float z = y - Lab.z / 2.000;
+    float x = (Lab.y - 0.5) / 1.25 + y;
+    float z = y - (Lab.z - 0.5) / 0.5;
     
     float x3 = x * x * x;
     float y3 = y * y * y;
@@ -294,34 +198,6 @@ vec3 ConvertLabToRGB(vec3 Lab)
     
     return(RGB);
 }
-
-)glsl";
-
-global char *GlobalFastLabShaderHeaderCode = R"glsl(
-#version 330
-vec3 ConvertRGBToLab(vec3 RGB)
-{
-    mat3 ToXYZ = mat3(20416.0 / 41085.0, 319.0 / 1245.0, 957.0 / 41085.0, 2533.0 / 7470.0, 2533.0 / 3735.0, 2533.0 / 22410.0, 245.0 / 1494.0, 49.0 / 747.0, 3871.0 / 4482.0);
-    
-    vec3 Linear = vec3(pow(RGB.x, 2.2), pow(RGB.y, 2.2), pow(RGB.z, 2.2));
-    vec3 XYZ = ToXYZ * Linear;
-    vec3 Cubic = vec3(pow(XYZ.x, 1.0 / 2.4), pow(XYZ.y, 1.0 / 2.4), pow(XYZ.z, 1.0 / 2.4));
-    vec3 Lab = vec3(Cubic.y, Cubic.x - Cubic.y, Cubic.y - Cubic.z);
-    
-    return(Lab);
-}
-vec3 ConvertLabToRGB(vec3 Lab)
-{
-    mat3 ToRGB = mat3(78.0 / 29.0, -2589.0 / 2533.0, 3.0 / 49.0, -37.0 / 29.0, 5011.0 / 2533.0, -11.0 / 49.0, -12.0 / 29.0, 111.0 / 2533.0, 57.0 / 49.0);
-    
-    vec3 Cubic = vec3(Lab.y + Lab.x, Lab.x, Lab.x - Lab.z);
-    vec3 XYZ = vec3(pow(Cubic.x, 2.4), pow(Cubic.y, 2.4), pow(Cubic.z, 2.4));
-    vec3 Linear = ToRGB * XYZ;
-    vec3 RGB = vec3(pow(Linear.x, 1.0 / 2.2), pow(Linear.y, 1.0 / 2.2), pow(Linear.z, 1.0 / 2.2));
-    
-    return(RGB);
-}
-
 )glsl";
 
 internal GLuint
@@ -338,7 +214,7 @@ smooth out vec4 Color;
 
 void main(void)
 {
-gl_Position = VertP;
+gl_Position = Transform * VertP;
 Color = VertColor;
 }
 )glsl";
@@ -354,7 +230,7 @@ out vec4 FragmentColor;
 void main(void)
 {
 FragmentColor = Color;
-if(mod(floor(gl_FragCoord.x / 4) + floor(gl_FragCoord.y / 4), 2) > 0.5)
+if(mod(floor(gl_FragCoord.x / 8) + floor(gl_FragCoord.y / 8), 2) > 0.5)
 {
 FragmentColor = vec4(1 - FragmentColor.x, 1 - FragmentColor.y, 1 - FragmentColor.z, FragmentColor.w);
 }
@@ -401,6 +277,82 @@ FragmentColor = texture(Image, FragUV);
 )glsl";
     
     GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, Result);
+    
+    return(Program);
+}
+internal GLuint
+CompileConvertToLab(open_gl *OpenGL, render_program_base *Result)
+{
+    char *VertexCode = R"glsl(
+// Vertex code
+uniform mat4 Transform;
+
+in vec4 VertP;
+in vec2 VertUV;
+
+smooth out vec2 FragUV;
+
+void main(void)
+{
+vec4 Position = Transform * VertP;
+gl_Position = Position;
+FragUV = VertUV;
+}
+)glsl";
+    
+    char *FragmentCode = R"glsl(
+// Fragment code
+uniform sampler2D Image;
+
+smooth in vec2 FragUV;
+
+out vec4 FragmentColor;
+
+void main(void)
+{
+FragmentColor = vec4(ConvertRGBToLab(texture(Image, FragUV).xyz), texture(Image, FragUV).w);
+}
+)glsl";
+    
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, Result);
+    
+    return(Program);
+}
+internal GLuint
+CompileConvertToRGB(open_gl *OpenGL, render_program_base *Result)
+{
+    char *VertexCode = R"glsl(
+// Vertex code
+uniform mat4 Transform;
+
+in vec4 VertP;
+in vec2 VertUV;
+
+smooth out vec2 FragUV;
+
+void main(void)
+{
+vec4 Position = Transform * VertP;
+gl_Position = Position;
+FragUV = VertUV;
+}
+)glsl";
+    
+    char *FragmentCode = R"glsl(
+// Fragment code
+uniform sampler2D Image;
+
+smooth in vec2 FragUV;
+
+out vec4 FragmentColor;
+
+void main(void)
+{
+FragmentColor = vec4(ConvertLabToRGB(texture(Image, FragUV).xyz), 1.0);
+}
+)glsl";
+    
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, Result);
     
     return(Program);
 }
@@ -507,15 +459,16 @@ out vec4 FragmentColor;
 void main(void)
 {
 vec3 RGB = ConvertLabToRGB(Color.xyz);
+vec4 Lab = Color;
 
     float Cmax = max(max(RGB.x, RGB.y), RGB.z);
     float Cmin = min(min(RGB.x, RGB.y), RGB.z);
     if(Cmax > 1.0 || Cmin < 0.0)
     {
-         RGB = vec3(0.9);
+           Lab = vec4(0.91117078, 0.5, 0.5, 1);
     }
     
-     FragmentColor = vec4(RGB, 1);
+     FragmentColor = Lab;
      }
 )glsl";
     
@@ -549,17 +502,17 @@ out vec4 FragmentColor;
 
 void main(void)
 {
-vec3 Lab = vec3(Color.x, Color.y * cos(Color.z), Color.y * sin(Color.z));
+vec3 Lab = vec3(Color.x, Color.y * cos(Color.z) + 0.5, Color.y * sin(Color.z) + 0.5);
 vec3 RGB = ConvertLabToRGB(Lab);
 
     float Cmax = max(max(RGB.x, RGB.y), RGB.z);
     float Cmin = min(min(RGB.x, RGB.y), RGB.z);
     if(Cmax > 1.0 || Cmin < 0.0)
     {
-         RGB = vec3(0.9);
+          Lab= vec3(0.91117078, 0.5, 0.5);
     }
     
-     FragmentColor = vec4(RGB, 1);
+     FragmentColor = vec4(Lab, 1);
      }
 )glsl";
     
@@ -597,6 +550,8 @@ Color = VertColor;
 // Fragment code
 uniform vec4 BrushMode;
 uniform float BrushStyle;
+uniform float LightLimit;
+uniform float DarkLimit;
 uniform sampler2D Image;
 
 smooth in vec2 FragUV;
@@ -606,32 +561,45 @@ out vec4 FragmentColor;
 
 void main(void)
 {
-float Alpha;
- if(BrushStyle > 1.5)
+vec4 BaseColor = texelFetch(Image, ivec2(gl_FragCoord.xy), 0);
+float Alpha = gl_FragCoord.z;
+
+if(BrushStyle > 1.5)
 {
-Alpha = Color.w * clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
+Alpha *= clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
 } 
 else
 {
 if(FragUV.x + BrushStyle > 0)
 {
-Alpha = 0.5 * Color.w * (1 + cos(FragUV.x * 3.1415926535897932384626433832795));
+Alpha *= 0.5 * (1 + cos(FragUV.x * 3.1415926535897932384626433832795));
 }
 else
 {
- Alpha = Color.w * clamp(1.0 + FragUV.x * FragUV.y, 0.0, 1.0);
+ Alpha *= clamp(1.0 + FragUV.x * FragUV.y, 0.0, 1.0);
 }
 }
 
-vec3 Lab0 = ConvertRGBToLab(Color.xyz);
-     vec3 Lab1 = ConvertRGBToLab(texelFetch(Image, ivec2(gl_FragCoord.xy), 0).xyz);
+float Blend = 1 - ((1 - Alpha) * BaseColor.w);
+
+vec3 Lab0 = Color.xyz;
+     vec3 Lab1 = BaseColor.xyz;
+     vec3 BlendMode = vec3(Blend * BrushMode.x, Blend * BrushMode.y, Blend * BrushMode.y);
      
-     vec3 BlendMode = vec3(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y);
+     if(Lab0.x * LightLimit > Lab1.x)
+     {
+     BlendMode.x = 0;
+     }
+     if(Lab0.x < Lab1.x * DarkLimit)
+     {
+     BlendMode.x = 0;
+     }
+     
      vec3 Lab = mix(Lab1, Lab0, BlendMode);
      
-    vec3 RGB = ConvertLabToRGB(Lab);
-    
-     FragmentColor = vec4(RGB, 1);
+     float AlphaOut = clamp(Alpha * BrushMode.z + BaseColor.w, 0.0, 1.0);
+     
+     FragmentColor = vec4(Lab, AlphaOut);
      }
 )glsl";
     
@@ -639,6 +607,93 @@ vec3 Lab0 = ConvertRGBToLab(Color.xyz);
     
     Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
     Result->BrushStyleID = glGetUniformLocation(Program, "BrushStyle");
+    Result->LightLimitID = glGetUniformLocation(Program, "LightLimit");
+    Result->DarkLimitID = glGetUniformLocation(Program, "DarkLimit");
+    
+    return(Program);
+}
+internal GLuint
+CompileBrushAlphaMode(open_gl *OpenGL, brush_mode_program *Result)
+{
+    char *VertexCode = R"glsl(
+// Vertex code
+uniform mat4 Transform;
+
+in vec4 VertP;
+in vec2 VertUV;
+in vec4 VertColor;
+
+smooth out vec2 FragUV;
+smooth out vec4 Color;
+
+void main(void)
+{
+vec4 Position = Transform * VertP;
+gl_Position = Position;
+FragUV = VertUV;
+Color = VertColor;
+}
+)glsl";
+    
+    char *FragmentCode = R"glsl(
+// Fragment code
+uniform vec4 BrushMode;
+uniform float BrushStyle;
+uniform float LightLimit;
+uniform float DarkLimit;
+uniform sampler2D Image;
+
+smooth in vec2 FragUV;
+smooth in vec4 Color;
+
+out vec4 FragmentColor;
+
+void main(void)
+{
+vec4 BaseColor = texelFetch(Image, ivec2(gl_FragCoord.xy), 0);
+float Alpha = gl_FragCoord.z;
+
+if(BrushStyle > 1.5)
+{
+Alpha *= clamp((1.0 - abs(FragUV.x)) * FragUV.y, 0.0, 1.0);
+} 
+else
+{
+if(FragUV.x + BrushStyle > 0)
+{
+Alpha *= 0.5 * (1 + cos(FragUV.x * 3.1415926535897932384626433832795));
+}
+else
+{
+ Alpha *= clamp(1.0 + FragUV.x * FragUV.y, 0.0, 1.0);
+}
+}
+
+vec4 Lab0 = Color;
+     vec4 Lab1 = BaseColor;
+     vec4 BlendMode = vec4(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y, Alpha * BrushMode.z);
+     
+     if(Lab0.x * LightLimit > Lab1.x)
+     {
+     BlendMode.x = 0;
+     }
+     if(Lab0.x < Lab1.x * DarkLimit)
+     {
+     BlendMode.x = 0;
+     }
+     
+     vec4 Lab = mix(Lab1, Lab0, BlendMode);
+     
+     FragmentColor = Lab;
+     }
+)glsl";
+    
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
+    
+    Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
+    Result->BrushStyleID = glGetUniformLocation(Program, "BrushStyle");
+    Result->LightLimitID = glGetUniformLocation(Program, "LightLimit");
+    Result->DarkLimitID = glGetUniformLocation(Program, "DarkLimit");
     
     return(Program);
 }
@@ -662,26 +717,22 @@ gl_Position = Position;
     
     char *FragmentCode = R"glsl(
 // Fragment code
-uniform vec4 BrushMode;
-uniform float BrushStyle;
 uniform vec2 Origin;
 uniform vec2 Target;
-uniform vec2 Normal1;
-uniform vec2 Normal2;
-  uniform vec4 Color1;
+uniform vec4 Color1;
 uniform vec4 Color2;
 uniform float Radius1;
 uniform float Radius2;
-uniform sampler2D Image;
 
 in vec4 gl_FragCoord;
 
 out vec4 FragmentColor;
 
-void main(void)
+ void main(void)
 {
- float Ignore = 1;
-float Alpha;
+ float Alpha;
+float OriginAlpha;
+float TargetAlpha;
 vec2 FragP = gl_FragCoord.xy;
 vec2 Point = FragP - Origin;
 vec2 Line = Target - Origin;
@@ -690,56 +741,33 @@ float Interpolator = clamp(dot(Point, Line) / dot(Line, Line), 0.0, 1.0);
 float Radius = mix(Radius1, Radius2, Interpolator);
 float Distance = length(Point - Interpolator * Line);
 float NormalizedDistance = clamp(Distance / Radius, 0.0, 1.0);
+float OriginDistance = length(Point);
+float NormalizedOriginDistance = clamp(OriginDistance / Radius1, 0.0, 1.0);
+float TargetDistance = length(Point - Line);
+float NormalizedTargetDistance = clamp(TargetDistance / Radius2, 0.0, 1.0);
 
- if(BrushStyle > 1.5)
+ Alpha = 0.5 * Color.w * (1 + cos(NormalizedDistance * 3.1415926535897932384626433832795));
+OriginAlpha = 0.5 * Color1.w * (1 + cos(NormalizedOriginDistance * 3.1415926535897932384626433832795));
+TargetAlpha = 0.5 * Color2.w * (1 + cos(NormalizedDistance * 3.1415926535897932384626433832795));
+Alpha = max(Alpha, TargetAlpha);
+
+if(OriginAlpha >= 1 || OriginAlpha >= Alpha)
 {
-Alpha = Color.w * clamp(Radius - Distance, 0.0, 1.0);
-} 
+ Color.w = 0;
+}
 else
 {
-if(BrushStyle > 0)
-{
-Alpha = 0.5 * Color.w * (1 + cos(NormalizedDistance * 3.1415926535897932384626433832795));
-}
-else
-{
- Alpha = Color.w * (1 - NormalizedDistance);
-}
+ Color.w = clamp(1 - ((1 - Alpha) / (1 - OriginAlpha)), 0.0, 1.0);
 }
 
-if(dot(Point, Normal1) < 0)
-{
-Ignore = -Ignore;
-}
-if(dot(FragP - Target, Normal2) >= 0)
-{
-Ignore = -Ignore;
-}
-if(Ignore < 0)
-{
-Alpha = 0;
-}
-
-vec3 Lab0 = ConvertRGBToLab(Color.xyz);
-     vec3 Lab1 = ConvertRGBToLab(texelFetch(Image, ivec2(gl_FragCoord.xy), 0).xyz);
-     
-     vec3 BlendMode = vec3(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y);
-     vec3 Lab = mix(Lab1, Lab0, BlendMode);
-     
-    vec3 RGB = ConvertLabToRGB(Lab);
-    
-     FragmentColor = vec4(RGB, 1);
+     FragmentColor = Color;
      }
 )glsl";
     
     GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
     
-    Result->BrushModeID = glGetUniformLocation(Program, "BrushMode");
-    Result->BrushStyleID = glGetUniformLocation(Program, "BrushStyle");
     Result->OriginID = glGetUniformLocation(Program, "Origin");
     Result->TargetID = glGetUniformLocation(Program, "Target");
-    Result->Normal1ID = glGetUniformLocation(Program, "Normal1");
-    Result->Normal2ID = glGetUniformLocation(Program, "Normal2");
     Result->Color1ID = glGetUniformLocation(Program, "Color1");
     Result->Color2ID = glGetUniformLocation(Program, "Color2");
     Result->Radius1ID = glGetUniformLocation(Program, "Radius1");
@@ -785,15 +813,13 @@ void main(void)
 vec4 Color = texture(Mask, FragUV);
 float Alpha = Color.w * ((Radius.x == 0.0) ? 1.0 : clamp(length((FragUV - Center) * Radius), 0.0, 1.0));
 
-vec3 Lab0 = ConvertRGBToLab(texture(Image, FragUV).xyz);
-     vec3 Lab1 = ConvertRGBToLab(Color.xyz);
+vec3 Lab0 = texture(Image, FragUV).xyz;
+     vec3 Lab1 = Color.xyz;
      
      vec3 BlendMode = vec3(Alpha * BrushMode.x, Alpha * BrushMode.y, Alpha * BrushMode.y);
      vec3 Lab = mix(Lab0, Lab1, BlendMode);
      
-    vec3 RGB = ConvertLabToRGB(Lab);
-    
-     FragmentColor = vec4(RGB, 1);
+     FragmentColor = vec4(Lab, 1);
      }
 )glsl";
     
@@ -844,7 +870,16 @@ out vec4 FragmentColor;
 
 void main(void)
 {
-FragmentColor = vec4(texture(Image, FragUV).xyz, 1.0);
+vec4 DisplayLab = texture(Image, FragUV);
+vec4 DisplayColor = vec4(ConvertLabToRGB(DisplayLab.xyz), 1.0);
+
+vec4 AlphaColor = vec4(0.4, 0.4, 0.4, 1);
+if(mod(floor(gl_FragCoord.x / 8) + floor(gl_FragCoord.y / 8), 2) > 0.5)
+{
+AlphaColor = vec4(0.6, 0.6, 0.6, 1);
+}
+
+FragmentColor = mix(AlphaColor, DisplayColor, DisplayLab.w);
 
 vec2 RelPos = gl_FragCoord.xy - Cursor;
 float U = dot(RelPos, Normal);
@@ -858,7 +893,7 @@ if((floor(gl_FragCoord.xy) == Cursor) || (abs(U) <= max(HalfWidth, 1.5) && abs(V
 }
 )glsl";
     
-    GLuint Program = OpenGLCreateProgram(GlobalBasicShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
+    GLuint Program = OpenGLCreateProgram(GlobalLabShaderHeaderCode, VertexCode, FragmentCode, &Result->Common);
     
     Result->CursorID = glGetUniformLocation(Program, "Cursor");
     Result->HalfWidthID = glGetUniformLocation(Program, "HalfWidth");
@@ -874,7 +909,7 @@ IsValidArray(GLuint Index)
     return(Result);
 }
 internal void
-OpenGLProgramBegin(render_program_base  *Program)
+OpenGLProgramBegin(render_program_base *Program, m4x4 Transform)
 {
     glUseProgram(Program->Handle);
     
@@ -897,6 +932,8 @@ OpenGLProgramBegin(render_program_base  *Program)
         glEnableVertexAttribArray(CArray);
         glVertexAttribPointer(CArray, 4, GL_FLOAT, false, sizeof(common_vertex), (void *)OffsetOf(common_vertex, Color));
     }
+    
+    glUniformMatrix4fv(Program->TransformID, 1, GL_TRUE, Transform.E[0]);
 }
 
 internal void
@@ -923,21 +960,26 @@ OpenGLProgramEnd(render_program_base *Program)
 }
 
 internal void
-OpenGLProgramBegin(render_program_base *Program, m4x4 Transform)
+OpenGLProgramBegin(render_program_base *Program)
 {
-    OpenGLProgramBegin(Program);
-    
-    glUniformMatrix4fv(Program->TransformID, 1, GL_TRUE, Transform.E[0]);
+    m4x4 Transform = {
+        1, 0, 0, 0, 
+        0, 1, 0, 0, 
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    OpenGLProgramBegin(Program, Transform);
 }
 
 internal void
-OpenGLProgramBegin(brush_mode_program *Program, m4x4 Transform, v4 BrushMode, r32 BrushStyle)
+OpenGLProgramBegin(brush_mode_program *Program, m4x4 Transform, v4 BrushMode, r32 BrushStyle, r32 LightLimit, r32 DarkLimit)
 {
     OpenGLProgramBegin(&Program->Common);
     
     glUniformMatrix4fv(Program->Common.TransformID, 1, GL_TRUE, Transform.E[0]);
     glUniform4fv(Program->BrushModeID, 1, BrushMode.E);
     glUniform1f(Program->BrushStyleID, BrushStyle);
+    glUniform1f(Program->LightLimitID, LightLimit);
+    glUniform1f(Program->DarkLimitID, DarkLimit);
 }
 internal void
 OpenGLProgramEnd(brush_mode_program *Program)
@@ -946,17 +988,13 @@ OpenGLProgramEnd(brush_mode_program *Program)
 }
 
 internal void
-OpenGLProgramBegin(line_mode_program *Program, m4x4 Transform, v4 BrushMode, r32 BrushStyle, v2 Origin, v2 Target, v2 Normal1, v2 Normal2, v4 Color1, v4 Color2, r32 Radius1, r32 Radius2)
+OpenGLProgramBegin(line_mode_program *Program, m4x4 Transform, v2 Origin, v2 Target, v4 Color1, v4 Color2, r32 Radius1, r32 Radius2)
 {
     OpenGLProgramBegin(&Program->Common);
     
     glUniformMatrix4fv(Program->Common.TransformID, 1, GL_TRUE, Transform.E[0]);
-    glUniform4fv(Program->BrushModeID, 1, BrushMode.E);
-    glUniform1f(Program->BrushStyleID, BrushStyle);
     glUniform2fv(Program->OriginID, 1, Origin.E);
     glUniform2fv(Program->TargetID, 1, Target.E);
-    glUniform2fv(Program->Normal1ID, 1, Normal1.E);
-    glUniform2fv(Program->Normal2ID, 1, Normal2.E);
     glUniform4fv(Program->Color1ID, 1, Color1.E);
     glUniform4fv(Program->Color2ID, 1, Color2.E);
     glUniform1f(Program->Radius1ID, Radius1);
@@ -999,10 +1037,10 @@ OpenGLInitPrograms(open_gl *OpenGL)
     common_vertex Vertices[] =
     {
         // NOTE(Zyonji): The colors are for the transparency pattern.
-        {{-1,  1, 0, 1}, {0, 1}, {0.3, 0.3, 0.3, 1.0}},
-        {{-1, -1, 0, 1}, {0, 0}, {0.3, 0.3, 0.3, 1.0}},
-        {{ 1,  1, 0, 1}, {1, 1}, {0.3, 0.3, 0.3, 1.0}},
-        {{ 1, -1, 0, 1}, {1, 0}, {0.3, 0.3, 0.3, 1.0}},
+        {{-1,  1, 0, 1}, {0, 1}, {0.3, 0.5, 0.5, 1.0}},
+        {{-1, -1, 0, 1}, {0, 0}, {0.3, 0.5, 0.5, 1.0}},
+        {{ 1,  1, 0, 1}, {1, 1}, {0.3, 0.5, 0.5, 1.0}},
+        {{ 1, -1, 0, 1}, {1, 0}, {0.3, 0.5, 0.5, 1.0}},
     };
     glBufferData(GL_ARRAY_BUFFER, sizeof(Vertices), Vertices, GL_STATIC_DRAW);
     
@@ -1019,6 +1057,16 @@ OpenGLInitPrograms(open_gl *OpenGL)
     if(!CompileTransferPixels(OpenGL,       &OpenGL->TransferPixelsProgram))
     {
         LogError("Unable to compile the pixel transfer program.", "OpenGL");
+        Return = false;
+    }
+    if(!CompileConvertToLab(OpenGL,         &OpenGL->ConvertToLabProgram))
+    {
+        LogError("Unable to compile the Lab convresion program.", "OpenGL");
+        Return = false;
+    }
+    if(!CompileConvertToRGB(OpenGL,         &OpenGL->ConvertToRGBProgram))
+    {
+        LogError("Unable to compile the RGB convresion program.", "OpenGL");
         Return = false;
     }
     if(!CompileStaticTransferPixels(OpenGL, &OpenGL->StaticTransferPixelsProgram))
@@ -1046,7 +1094,12 @@ OpenGLInitPrograms(open_gl *OpenGL)
         LogError("Unable to compile the brush stroke renderer.", "OpenGL");
         Return = false;
     }
-    if(!CompileLineMode(OpenGL,      &OpenGL->LineModeProgram))
+    if(!CompileBrushAlphaMode(OpenGL,       &OpenGL->BrushAlphaModeProgram))
+    {
+        LogError("Unable to compile the alpha sensitive brush stroke renderer.", "OpenGL");
+        Return = false;
+    }
+    if(!CompileLineMode(OpenGL,             &OpenGL->LineModeProgram))
     {
         LogError("Unable to compile the line stroke renderer.", "OpenGL");
         Return = false;
@@ -1088,7 +1141,7 @@ CreateFramebuffer(open_gl *OpenGL, u32 Width, u32 Height, void *Memory)
     glGenFramebuffers(1, &Result.FramebufferHandle);
     glBindFramebuffer(GL_FRAMEBUFFER, Result.FramebufferHandle);
     
-    Result.ColorHandle  = FramebufferTextureImage(OpenGL, GL_TEXTURE_2D, Width, Height, GL_RGBA8, Memory);
+    Result.ColorHandle  = FramebufferTextureImage(OpenGL, GL_TEXTURE_2D, Width, Height, GL_RGBA12, Memory);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, Result.ColorHandle, 0);
     
     //GLenum FrameBufferStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -1115,6 +1168,35 @@ FreeFramebuffer(frame_buffer *Framebuffer)
     }
 }
 
+internal frame_buffer
+CreateConvertedFramebuffer(open_gl *OpenGL, u32 Width, u32 Height, void *Memory)
+{
+    frame_buffer Result = CreateFramebuffer(OpenGL, Width, Height, 0);
+    frame_buffer TempBuffer = CreateFramebuffer(OpenGL, Width, Height, Memory);
+    
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Result.FramebufferHandle);
+    glViewport(0, 0, Width, Height);
+    glScissor(0, 0, Width, Height);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+    m4x4 Transform = {
+        1, 0, 0, 0, 
+        0, 1, 0, 0, 
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    OpenGLProgramBegin(&OpenGL->ConvertToLabProgram, Transform);
+    glBindTexture(GL_TEXTURE_2D, TempBuffer.ColorHandle);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    OpenGLProgramEnd(&OpenGL->ConvertToLabProgram);
+    
+    FreeFramebuffer(&TempBuffer);
+    
+    glBindTexture(GL_TEXTURE_2D, Result.ColorHandle);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    
+    return(Result);
+}
+
 internal void
 ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame_buffer *TargetBuffer, frame_buffer *SwapBuffer)
 {
@@ -1126,17 +1208,30 @@ ConvertImageToBuffer(open_gl *OpenGL, void *Memory, u32 Width, u32 Height, frame
     {
         FreeFramebuffer(SwapBuffer);
     }
-    *TargetBuffer = CreateFramebuffer(OpenGL, Width, Height, Memory);
-    *SwapBuffer = CreateFramebuffer(OpenGL, Width, Height, 0);
+    *TargetBuffer = CreateFramebuffer(OpenGL, Width, Height, 0);
+    *SwapBuffer = CreateFramebuffer(OpenGL, Width, Height, Memory);
     
-    if(!Memory)
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, TargetBuffer->FramebufferHandle);
+    glViewport(0, 0, Width, Height);
+    glScissor(0, 0, Width, Height);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+    if(Memory)
     {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, TargetBuffer->FramebufferHandle);
-        glViewport(0, 0, Width, Height);
-        glScissor(0, 0, Width, Height);
-        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
+        m4x4 Transform = {
+            1, 0, 0, 0, 
+            0, 1, 0, 0, 
+            0, 0, 1, 0, 
+            0, 0, 0, 1,};
+        OpenGLProgramBegin(&OpenGL->ConvertToLabProgram, Transform);
+        glBindTexture(GL_TEXTURE_2D, SwapBuffer->ColorHandle);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->ConvertToLabProgram);
+    }
+    else
+    {
         // NOTE(Zyonji): The color for a new empty canvas.
-        glClearColor(0.7, 0.7, 0.7, 1);
+        glClearColor(0.7, 0.5, 0.5, 1);
         glClear(GL_COLOR_BUFFER_BIT);
     }
 }
@@ -1270,28 +1365,35 @@ DrawPallet(u32area Area)
     u32 Y = Area.y;
     u32 Half = Area.Width / 2;
     u32 Third = Area.Width / 3;
-    glClearColor(1, 1, 1, 1);
+    v3 Lab;
+    glClearColor(1, 0.5, 0.5, 1);
     glScissor(X, Y + 2 * Third, Half, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0, 0, 0, 1);
+    glClearColor(0, 0.5, 0.5, 1);
     glScissor(X + Half, Y + 2 * Third, Third * 3 - Half, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(1, 0, 0, 1);
+    Lab = ConvertRGBToLab({1, 0, 0});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X, Y + Third, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0, 1, 0, 1);
+    Lab = ConvertRGBToLab({0, 1, 0});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X + Third, Y + Third, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0, 0, 1, 1);
+    Lab = ConvertRGBToLab({0, 0, 1});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X + 2 * Third, Y + Third, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(1, 0, 1, 1);
+    Lab = ConvertRGBToLab({1, 0, 1});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X, Y, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(1, 1, 0, 1);
+    Lab = ConvertRGBToLab({1, 1, 0});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X + Third, Y, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0, 1, 1, 1);
+    Lab = ConvertRGBToLab({0, 1, 1});
+    glClearColor(Lab.x, Lab.y, Lab.z, 1);
     glScissor(X + 2 * Third, Y, Third, Third);
     glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -1321,6 +1423,24 @@ DrawSwitch(open_gl *OpenGL, u32area Area, u32 Toggle)
     else
     {
         DrawTile(OpenGL, Area, {256.0f, 288.0f}, {256.0f, 320.0f}, {288.0f, 288.0f}, {288.0f, 320.0f});
+    }
+}
+internal void
+DrawRangeSwitch(open_gl *OpenGL, u32area Area, b32 Truned, u32 Toggle)
+{
+    r32 X1, X2, Y1, Y2;
+    X1 = 256.0f;
+    X2 = 288.0f;
+    Y1 =  96.0f + Toggle * 32.0f;
+    Y2 = 128.0f + Toggle * 32.0f;
+    
+    if(Truned)
+    {
+        DrawTile(OpenGL, Area, {X1, Y1}, {X1, Y2}, {X2, Y1}, {X2, Y2});
+    }
+    else
+    {
+        DrawTile(OpenGL, Area, {X2, Y1}, {X1, Y1}, {X2, Y2}, {X1, Y2});
     }
 }
 internal void
@@ -1413,6 +1533,9 @@ DrawLongToggle(open_gl *OpenGL, u32area Area, b32 Toggle)
 internal void
 UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
 {
+    r32 Light = 0.91117078;
+    r32 Dark = 0.72759241;
+    
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->MenuFramebuffer.FramebufferHandle);
     glBindBuffer(GL_ARRAY_BUFFER, OpenGL->ScreenFillVertexBuffer);
     glViewport(0, 0, Menu->Size.Width, Menu->Size.Height);
@@ -1420,29 +1543,17 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     glClearColor(Color.x, Color.y, Color.z, 1);
     glScissor(Menu->ColorB.x, Menu->ColorB.y, Menu->ColorB.Height, Menu->ColorB.Width);
     glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(Color.x, Color.y, Color.z, Color.w);
     glScissor(Menu->ColorA.x, Menu->ColorA.y, Menu->ColorA.Height, Menu->ColorA.Width);
     glClear(GL_COLOR_BUFFER_BIT);
     
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
-    
-    OpenGLProgramBegin(&OpenGL->VisualTransparency);
-    glBlendColor(1 - Color.a, 1 - Color.a, 1 - Color.a, 1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    OpenGLProgramEnd(&OpenGL->VisualTransparency);
-    
     for(u32 I = 0; I < Menu->Steps; ++I)
     {
-        r32 Alpha = (r32)I / (r32)(Menu->Steps - 1);
-        glBlendColor(Alpha, Alpha, Alpha, 0);
+        r32 Alpha = 1.0f - (r32)I / (r32)(Menu->Steps - 1);
+        glClearColor(Color.x, Color.y, Color.z, Alpha);
         glScissor(Menu->Alpha.x + I * Menu->Offset.x, Menu->Alpha.y + I * Menu->Offset.y, Menu->Alpha.Width, Menu->Alpha.Height);
         glClear(GL_COLOR_BUFFER_BIT);
-        OpenGLProgramBegin(&OpenGL->VisualTransparency);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        OpenGLProgramEnd(&OpenGL->VisualTransparency);
     }
-    
-    glDisable(GL_BLEND);
     
     DrawToggle(OpenGL, Menu->TiltToggle, Mode & TILT_MODE_DISABLE);
     DrawToggle(OpenGL, Menu->LinePenToggle, Mode & LINE_PEN_MODE);
@@ -1453,51 +1564,51 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     DrawColorToggle(OpenGL, Menu->ColorButtonB, false, !(Mode & COLOR_MODE_PRESSURE));
     DrawShortToggle(OpenGL, Menu->AlphaButton, !(Mode & COLOR_MODE_ALPHA));
     DrawShortToggle(OpenGL, Menu->LButton, !(Mode & COLOR_MODE_LUMINANCE));
+    DrawRangeSwitch(OpenGL, Menu->LLimitToggle, Menu->Size.Width > Menu->Size.Height, 2 - ((Mode & COLOR_LIMIT_LUMINANCE) >> COLOR_LIMIT_OFFSET));
     DrawLongToggle(OpenGL, Menu->abButton, !(Mode & COLOR_MODE_CHROMA));
     DrawToggle(OpenGL, Menu->chButton, (Mode & MENU_MODE_AB));
     
-    v3 Lab = ConvertRGBToLab(Color.xyz);
     for(u32 I = 0; I < Menu->Steps; ++I)
     {
         r32 L = (r32)(I + 1) / (r32)(Menu->Steps + 1);
-        v3 RGB = ValidatedRGBfromLab({L, Lab.y, Lab.z});
-        glClearColor(RGB.x, RGB.y, RGB.z, 1);
+        v3 Step = ValidatedLabForRGB({L, Color.y, Color.z});
+        glClearColor(Step.x, Step.y, Step.z, 1);
         glScissor(Menu->L.x + I * Menu->Offset.x, Menu->L.y + I * Menu->Offset.y, Menu->L.Width, Menu->L.Height);
         glClear(GL_COLOR_BUFFER_BIT);
     }
     v4 L00, L01, L10, L11;
     if(Menu->Size.Width > Menu->Size.Height)
     {
-        L00 = {0, Lab.y, Lab.z, 1};
-        L01 = {0, Lab.y, Lab.z, 1};
-        L10 = {1, Lab.y, Lab.z, 1};
-        L11 = {1, Lab.y, Lab.z, 1};
+        L00 = {0, Color.y, Color.z, 1};
+        L01 = {0, Color.y, Color.z, 1};
+        L10 = {1, Color.y, Color.z, 1};
+        L11 = {1, Color.y, Color.z, 1};
         
         glViewport(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, Menu->LSmooth.Width, Menu->LSmooth.Height);
         glScissor(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, Menu->LSmooth.Width, Menu->LSmooth.Height);
-        glClearColor(0.9, 0.9, 0.9, 1);
+        glClearColor(Light, 0.5, 0.5, 1);
         glClear(GL_COLOR_BUFFER_BIT);
-        u32 WidthPortion = Menu->LSmooth.Width - (u32)(Lab.x * (r32)Menu->LSmooth.Width);
+        u32 WidthPortion = Menu->LSmooth.Width - (u32)(Color.x * (r32)Menu->LSmooth.Width);
         glViewport(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, WidthPortion, Menu->LSmooth.Height);
         glScissor(Menu->LSmooth.x, Menu->LSmooth.y - Menu->LSmooth.Height, WidthPortion, Menu->LSmooth.Height);
-        glClearColor(0.7, 0.7, 0.7, 1);
+        glClearColor(Dark, 0.5, 0.5, 1);
         glClear(GL_COLOR_BUFFER_BIT);
     }
     else
     {
-        L00 = {1, Lab.y, Lab.z, 1};
-        L01 = {0, Lab.y, Lab.z, 1};
-        L10 = {1, Lab.y, Lab.z, 1};
-        L11 = {0, Lab.y, Lab.z, 1};
+        L00 = {1, Color.y, Color.z, 1};
+        L01 = {0, Color.y, Color.z, 1};
+        L10 = {1, Color.y, Color.z, 1};
+        L11 = {0, Color.y, Color.z, 1};
         
         glViewport(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
         glScissor(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
-        glClearColor(0.7, 0.7, 0.7, 1);
+        glClearColor(Dark, 0.5, 0.5, 1);
         glClear(GL_COLOR_BUFFER_BIT);
-        u32 HeightPortion = (u32)(Lab.x * (r32)Menu->LSmooth.Height);
+        u32 HeightPortion = (u32)(Color.x * (r32)Menu->LSmooth.Height);
         glViewport(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, HeightPortion);
         glScissor(Menu->LSmooth.x - Menu->LSmooth.Width, Menu->LSmooth.y, Menu->LSmooth.Width, HeightPortion);
-        glClearColor(0.9, 0.9, 0.9, 1);
+        glClearColor(Light, 0.5, 0.5, 1);
         glClear(GL_COLOR_BUFFER_BIT);
     }
     glViewport(Menu->LSmooth.x, Menu->LSmooth.y, Menu->LSmooth.Width, Menu->LSmooth.Height);
@@ -1519,63 +1630,62 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     if(Mode & MENU_MODE_AB)
     {
         v4 a00, a01, a10, a11, b00, b01, b10, b11;
-        r32 Limit = GetABLimit(Color.xyz);
         if(Menu->Size.Width > Menu->Size.Height)
         {
-            r32 Width = Limit * Menu->a.Height / Menu->a.Width;
-            a00 = {Lab.x, -Limit, Lab.z + Width, 1};
-            a01 = {Lab.x, -Limit, Lab.z - Width, 1};
-            a10 = {Lab.x,  Limit, Lab.z + Width, 1};
-            a11 = {Lab.x,  Limit, Lab.z - Width, 1};
-            b00 = {Lab.x, Lab.y + Width, -Limit, 1};
-            b01 = {Lab.x, Lab.y - Width, -Limit, 1};
-            b10 = {Lab.x, Lab.y + Width,  Limit, 1};
-            b11 = {Lab.x, Lab.y - Width,  Limit, 1};
+            r32 Width = 0.3375f * Menu->a.Height / Menu->a.Width;
+            a00 = {Color.x, 0.1625, Color.z + Width, 1};
+            a01 = {Color.x, 0.1625, Color.z - Width, 1};
+            a10 = {Color.x, 0.8375, Color.z + Width, 1};
+            a11 = {Color.x, 0.8375, Color.z - Width, 1};
+            b00 = {Color.x, Color.y + Width, 0.1625, 1};
+            b01 = {Color.x, Color.y - Width, 0.1625, 1};
+            b10 = {Color.x, Color.y + Width, 0.8375, 1};
+            b11 = {Color.x, Color.y - Width, 0.8375, 1};
             
             Gap.y = Menu->a.y + Menu->a.Height;
             Gap.Height = (Menu->b.y - Gap.y) / 2;
             glViewport(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
             glScissor(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 APortion = (u32)(0.5f * (1 - Lab.y / Limit) * Gap.Width);
+            u32 APortion = (u32)((1 - Color.y) * Gap.Width);
             glViewport(Gap.x, Gap.y, APortion, Gap.Height);
             glScissor(Gap.x, Gap.y, APortion, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 BPortion = (u32)(0.5f * (1 - Lab.z / Limit) * Gap.Width);
+            u32 BPortion = (u32)((1 - Color.z) * Gap.Width);
             glViewport(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
             glScissor(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         else
         {
-            r32 Width = Limit * Menu->a.Width / Menu->a.Height;
-            a00 = {Lab.x,  Limit, Lab.z + Width, 1};
-            a01 = {Lab.x, -Limit, Lab.z + Width, 1};
-            a10 = {Lab.x,  Limit, Lab.z - Width, 1};
-            a11 = {Lab.x, -Limit, Lab.z - Width, 1};
-            b00 = {Lab.x, Lab.y + Width,  Limit, 1};
-            b01 = {Lab.x, Lab.y + Width, -Limit, 1};
-            b10 = {Lab.x, Lab.y - Width,  Limit, 1};
-            b11 = {Lab.x, Lab.y - Width, -Limit, 1};
+            r32 Width = 0.3375f * Menu->a.Width / Menu->a.Height;
+            a00 = {Color.x, 0.8375, Color.z + Width, 1};
+            a01 = {Color.x, 0.1625, Color.z + Width, 1};
+            a10 = {Color.x, 0.8375, Color.z - Width, 1};
+            a11 = {Color.x, 0.1625, Color.z - Width, 1};
+            b00 = {Color.x, Color.y + Width, 0.8375, 1};
+            b01 = {Color.x, Color.y + Width, 0.1625, 1};
+            b10 = {Color.x, Color.y - Width, 0.8375, 1};
+            b11 = {Color.x, Color.y - Width, 0.1625, 1};
             
             Gap.x = Menu->a.x + Menu->a.Width;
             Gap.Width = (Menu->b.x - Gap.x) / 2;
             glViewport(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
             glScissor(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 APortion = (u32)(0.5f * (1 + Lab.y / Limit) * Gap.Height);
+            u32 APortion = (u32)((1 + Color.y) * Gap.Height);
             glViewport(Gap.x, Gap.y, Gap.Width, APortion);
             glScissor(Gap.x, Gap.y, Gap.Width, APortion);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 BPortion = (u32)(0.5f * (1 + Lab.z / Limit) * Gap.Height);
+            u32 BPortion = (u32)((1 + Color.z) * Gap.Height);
             glViewport(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
             glScissor(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         
@@ -1612,21 +1722,21 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
     else
     {
         v4 a00, a01, a10, a11, b00, b01, b10, b11;
-        v3 Lch = {Lab.x, Length(Lab.yz), (r32)atan2(Lab.z, Lab.y)};
+        v2 AB = {Color.y - 0.5f, Color.z - 0.5f};
+        v3 Lch = {Color.x, Length(AB), (r32)atan2(Color.z - 0.5, Color.y - 0.5)};
         b32 Flipped = false;
         if(Lch.z < 0)
         {
             Lch.z += Pi32;
             Flipped = true;
         }
-        r32 Limit = GetABLimit(Color.xyz);
         if(Menu->Size.Width > Menu->Size.Height)
         {
-            r32 Width = Limit * Menu->a.Height / Menu->a.Width;
-            a00 = {Lch.x, -Limit, Lch.z + Width, 1};
-            a01 = {Lch.x, -Limit, Lch.z - Width, 1};
-            a10 = {Lch.x,  Limit, Lch.z + Width, 1};
-            a11 = {Lch.x,  Limit, Lch.z - Width, 1};
+            r32 Width = 0.3375f * Menu->a.Height / Menu->a.Width;
+            a00 = {Lch.x, -0.3375, Lch.z + Width, 1};
+            a01 = {Lch.x, -0.3375, Lch.z - Width, 1};
+            a10 = {Lch.x,  0.3375, Lch.z + Width, 1};
+            a11 = {Lch.x,  0.3375, Lch.z - Width, 1};
             b00 = {Lch.x, Lch.y + Width, 2 * Pi32, 1};
             b01 = {Lch.x, Lch.y - Width, 2 * Pi32, 1};
             b10 = {Lch.x, Lch.y + Width, 0, 1};
@@ -1636,16 +1746,16 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             Gap.Height = (Menu->b.y - Gap.y) / 2;
             glViewport(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
             glScissor(Gap.x, Gap.y, Gap.Width, Gap.Height * 2);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 APortion = (u32)(0.5f * (1 - Lch.y / Limit) * Gap.Width);
+            u32 APortion = (u32)((0.5 - Lch.y / 0.675) * Gap.Width);
             if(Flipped)
             {
                 APortion = Gap.Width - APortion;
             }
             glViewport(Gap.x, Gap.y, APortion, Gap.Height);
             glScissor(Gap.x, Gap.y, APortion, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
             u32 BPortion = (u32)(0.5f * (Lch.z / Pi32) * Gap.Width);
             if(Flipped)
@@ -1654,16 +1764,16 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             }
             glViewport(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
             glScissor(Gap.x, Gap.y + Gap.Height, BPortion, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         else
         {
-            r32 Width = Limit * Menu->a.Width / Menu->a.Height;
-            a00 = {Lch.x,  Limit, Lch.z + Width, 1};
-            a01 = {Lch.x, -Limit, Lch.z + Width, 1};
-            a10 = {Lch.x,  Limit, Lch.z - Width, 1};
-            a11 = {Lch.x, -Limit, Lch.z - Width, 1};
+            r32 Width = 0.3375f * Menu->a.Width / Menu->a.Height;
+            a00 = {Lch.x,  0.3375, Lch.z + Width, 1};
+            a01 = {Lch.x, -0.3375, Lch.z + Width, 1};
+            a10 = {Lch.x,  0.3375, Lch.z - Width, 1};
+            a11 = {Lch.x, -0.3375, Lch.z - Width, 1};
             b00 = {Lch.x, Lch.y + Width, 0, 1};
             b01 = {Lch.x, Lch.y + Width, 2 * Pi32, 1};
             b10 = {Lch.x, Lch.y - Width, 0, 1};
@@ -1673,16 +1783,16 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             Gap.Width = (Menu->b.x - Gap.x) / 2;
             glViewport(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
             glScissor(Gap.x, Gap.y, Gap.Width * 2, Gap.Height);
-            glClearColor(0.7, 0.7, 0.7, 1);
+            glClearColor(Dark, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
-            u32 APortion = (u32)(0.5f * (1 + Lch.y / Limit) * Gap.Height);
+            u32 APortion = (u32)((Lch.y / 0.675 + 0.5) * Gap.Height);
             if(Flipped)
             {
                 APortion = Gap.Height - APortion;
             }
             glViewport(Gap.x, Gap.y, Gap.Width, APortion);
             glScissor(Gap.x, Gap.y, Gap.Width, APortion);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
             u32 BPortion = (u32)((1 - 0.5f * (Lch.z / Pi32)) * Gap.Height);
             if(Flipped)
@@ -1691,7 +1801,7 @@ UpdateMenu(open_gl *OpenGL, menu_state *Menu, v4 Color, u32 Mode)
             }
             glViewport(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
             glScissor(Gap.x + Gap.Width, Gap.y, Gap.Width, BPortion);
-            glClearColor(0.9, 0.9, 0.9, 1);
+            glClearColor(Light, 0.5, 0.5, 1);
             glClear(GL_COLOR_BUFFER_BIT);
         }
         glViewport(Menu->a.x, Menu->a.y, Menu->a.Width, Menu->a.Height);
@@ -1738,26 +1848,18 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     NewV *= (0.5f * NewPen.Width);
     v4 OldColor = OldPen.Color;
     v4 NewColor = NewPen.Color;
-    if(Mode & COLOR_MODE_PRESSURE)
-    {
-        OldColor.a *= OldPen.Pressure;
-        NewColor.a *= NewPen.Pressure;
-    }
-    else
-    {
-        OldColor.a = OldPen.Pressure;
-        NewColor.a = NewPen.Pressure;
-    }
+    r32 OldPress = OldPen.Pressure;
+    r32 NewPress = NewPen.Pressure;
     v2 Normal = Normalize(Perp(NewP - OldP));
     r32 OldAliasDistance = fabsf(Inner(OldV, Normal));
     r32 NewAliasDistance = fabsf(Inner(NewV, Normal));
     
     common_vertex Vertices[] =
     {
-        {{NewP.x+NewV.x, NewP.y+NewV.y, 0, 1}, { 1, NewAliasDistance}, NewColor},
-        {{OldP.x+OldV.x, OldP.y+OldV.y, 0, 1}, { 1, OldAliasDistance}, OldColor},
-        {{NewP.x-NewV.x, NewP.y-NewV.y, 0, 1}, {-1, NewAliasDistance}, NewColor},
-        {{OldP.x-OldV.x, OldP.y-OldV.y, 0, 1}, {-1, OldAliasDistance}, OldColor},
+        {{NewP.x+NewV.x, NewP.y+NewV.y, NewPress, 1}, { 1, NewAliasDistance}, NewColor},
+        {{OldP.x+OldV.x, OldP.y+OldV.y, OldPress, 1}, { 1, OldAliasDistance}, OldColor},
+        {{NewP.x-NewV.x, NewP.y-NewV.y, NewPress, 1}, {-1, NewAliasDistance}, NewColor},
+        {{OldP.x-OldV.x, OldP.y-OldV.y, OldPress, 1}, {-1, OldAliasDistance}, OldColor},
     };
     
     m4x4 Transform = {
@@ -1779,6 +1881,16 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     {
         BrushMode.z = 1;
     }
+    r32 LightLimit = 0;
+    if(Mode & COLOR_LIMIT_LIGHT)
+    {
+        LightLimit = 1.0f;
+    }
+    r32 DarkLimit = 0;
+    if(Mode & COLOR_LIMIT_DARK)
+    {
+        DarkLimit = 1.0f;
+    }
     
     //glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->SwapFramebuffer.FramebufferHandle);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
@@ -1788,10 +1900,17 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
     
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
     
-    OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE));
+    if(Mode & COLOR_MODE_PRESSURE)
+    {
+        OpenGLProgramBegin(&OpenGL->BrushAlphaModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE), LightLimit, DarkLimit);
+    }
+    else
+    {
+        OpenGLProgramBegin(&OpenGL->BrushModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE), LightLimit, DarkLimit);
+    }
     glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-    OpenGLProgramEnd(&OpenGL->BrushModeProgram);
+    OpenGLProgramEnd(&OpenGL->BrushModeProgram); //BrushModeProgram and BrushAlphaModeProgram are identical
     
 #if 0
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
@@ -1805,153 +1924,60 @@ RenderBrushStroke(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_t
 
 // TODO(Zyonji): To make it easier to test out, I gave this an internal state with previous points.  
 internal void
-RenderLine(open_gl *OpenGL, canvas_state Canvas, pen_target NextPen)
+RenderLine(open_gl *OpenGL, canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 {
-    local_persist v2 PreviousP;
-    local_persist v2 OldP;
-    local_persist v2 NewP;
-    local_persist v4 OldColor;
-    local_persist v4 NewColor;
-    local_persist r32 OldRadius;
-    local_persist r32 NewRadius;
-    
-    local_persist v2 OldV;
-    
-    local_persist u32 SegmentLength;
-    
-    u32 Mode = NextPen.Mode;
     v2 Center = {(0.5f * (r32)Canvas.Size.Width), (0.5f * (r32)Canvas.Size.Height)};
-    v2 NextP = NextPen.P;
-    
-    if(NextPen.Pressure == 0 && NewP.x == NextP.x && NewP.y == NextP.y)
+    u32 Mode = NewPen.Mode;
+    v2 OldP = OldPen.P;
+    v2 NewP = NewPen.P;
+    r32 OldRadius = 0.5f * OldPen.Width;
+    r32 NewRadius = 0.5f * NewPen.Width;
+    v4 OldColor = OldPen.Color;
+    v4 NewColor = NewPen.Color;
+    if(Mode & COLOR_MODE_PRESSURE)
     {
-        NewColor.a = 0;
-        SegmentLength = 4;
+        OldColor.a *= OldPen.Pressure;
+        NewColor.a *= NewPen.Pressure;
+    }
+    else
+    {
+        OldColor.a = OldPen.Pressure;
+        NewColor.a = NewPen.Pressure;
     }
     
-    if(NextPen.Pressure == 0 || NewP.x != NextP.x || NewP.y != NextP.y)
+    v2 MinP = {Minimum(OldP.x - OldRadius, NewP.x - NewRadius), Minimum(OldP.y - OldRadius, NewP.y - NewRadius)};
+    v2 MaxP = {Maximum(OldP.x + OldRadius, NewP.x + NewRadius), Maximum(OldP.y + OldRadius, NewP.y + NewRadius)};
+    
+    common_vertex Vertices[] =
     {
-        if(SegmentLength < 2)
-        {
-            v2 Vector = NewP - OldP;
-            v2 V = Normalize(Perp(Vector));
-            
-            OldP = NewP;
-            NewP = NextP;
-            OldRadius = NewRadius;
-            NewRadius = 0.5f * NextPen.Width;
-            
-            OldColor = NewColor;
-            NewColor = NextPen.Color;
-            if(Mode & COLOR_MODE_PRESSURE)
-            {
-                NewColor.a *= NextPen.Pressure;
-            }
-            else
-            {
-                NewColor.a = NextPen.Pressure;
-            }
-            
-            SegmentLength++;
-        }
-        else
-        {
-            v2 Vector = NewP - OldP;
-            v2 NextVector = NextP - NewP;
-            v2 NextDir = Normalize(NextVector);
-            v2 M = Normalize(Vector);
-            v2 N = Perp(M);
-            v2 V = Normalize(Perp(Vector));
-            r32 NextRadius = 0.5f * NextPen.Width;
-            
-            if(SegmentLength == 2)
-            {
-                OldV = M;
-            }
-            
-            v2 NewV = Normalize(M + NextDir);
-            if(NewV.x * V.x + NewV.y * V.y == 0)
-            {
-                NewV = M;
-            }
-            if(Inner(NewV, M) < 0)
-            {
-                NewV = -NewV;
-            }
-            
-            common_vertex Vertices[] =
-            {
-                {{NewP.x + NewRadius*( M.x+N.x), NewP.y + NewRadius*( M.y+N.y), 0, 1}, {}, {}},
-                {{OldP.x + OldRadius*(-M.x+N.x), OldP.y + OldRadius*(-M.y+N.y), 0, 1}, {}, {}},
-                {{NewP.x + NewRadius*( M.x-N.x), NewP.y + NewRadius*( M.y-N.y), 0, 1}, {}, {}},
-                {{OldP.x + OldRadius*(-M.x-N.x), OldP.y + OldRadius*(-M.y-N.y), 0, 1}, {}, {}},
-            };
-            
-            m4x4 Transform = {
-                (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
-                0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
-                0, 0, 1, 0, 
-                0, 0, 0, 1,};
-            // TODO(Zyonji): Figure out how to implement the different alpha modes. Probably through the Transferprogram
-            v4 BrushMode = {};
-            if(Mode & COLOR_MODE_LUMINANCE)
-            {
-                BrushMode.x = 1;
-            }
-            if(Mode & COLOR_MODE_CHROMA)
-            {
-                BrushMode.y = 1;
-            }
-            if(Mode & COLOR_MODE_ALPHA)
-            {
-                BrushMode.z = 1;
-            }
-            
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
-            glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-            glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
-            glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
-            
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
-            
-            OpenGLProgramBegin(&OpenGL->LineModeProgram, Transform, BrushMode, (r32)(Mode & PEN_BRUSH_STYLE), OldP + Center, NewP + Center, OldV, NewV, OldColor, NewColor, OldRadius, NewRadius);
-            glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
-            OpenGLProgramEnd(&OpenGL->LineModeProgram);
-            
-            PreviousP = OldP;
-            OldP = NewP;
-            NewP = NextP;
-            OldRadius = NewRadius;
-            NewRadius = NextRadius;
-            OldV = NewV;
-            
-            OldColor = NewColor;
-            NewColor = NextPen.Color;
-            if(Mode & COLOR_MODE_PRESSURE)
-            {
-                NewColor.a *= NextPen.Pressure;
-            }
-            else
-            {
-                NewColor.a = NextPen.Pressure;
-            }
-            
-            if(SegmentLength == 4)
-            {
-                SegmentLength = 0;
-            }
-            else if(NextPen.Pressure <= 0)
-            {
-                SegmentLength = 4;
-                RenderLine(OpenGL, Canvas, NextPen);
-            }
-            else
-            {
-                SegmentLength = 3;
-            }
-        }
-    }
+        {{MinP.x, MinP.y, 0, 1}, {}, {}},
+        {{MaxP.x, MinP.y, 0, 1}, {}, {}},
+        {{MinP.x, MaxP.y, 0, 1}, {}, {}},
+        {{MaxP.x, MaxP.y, 0, 1}, {}, {}},
+    };
+    
+    m4x4 Transform = {
+        (2.0f / (r32)Canvas.Size.Width), 0, 0, 0, 
+        0, (2.0f / (r32)Canvas.Size.Height), 0, 0, 
+        0, 0, 1, 0, 
+        0, 0, 0, 1,};
+    
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->CanvasFramebuffer.FramebufferHandle);
+    glViewport(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+    glScissor(0, 0, Canvas.Size.Width, Canvas.Size.Height);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+    
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices), Vertices);
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
+    OpenGLProgramBegin(&OpenGL->LineModeProgram, Transform, OldP + Center, NewP + Center, OldColor, NewColor, OldRadius, NewRadius);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, (sizeof(Vertices)/sizeof(*Vertices)));
+    OpenGLProgramEnd(&OpenGL->LineModeProgram);
+    
+    glDisable(GL_BLEND);
 }
 
 internal void
@@ -1985,6 +2011,7 @@ RenderCanvas(open_gl *OpenGL, canvas_state Canvas, m4x4 Transform, pen_state Pen
     }
     
     glGenerateMipmap(GL_TEXTURE_2D);
+    
     OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
@@ -1998,7 +2025,7 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGL->DisplayFramebuffer.FramebufferHandle);
     glViewport(PaintingRegion.x, PaintingRegion.y, PaintingRegion.Width, PaintingRegion.Height);
     glScissor(PaintingRegion.x, PaintingRegion.y, PaintingRegion.Width, PaintingRegion.Height);
-    glClearColor(0.8, 0.8, 0.8, 1.0);
+    glClearColor(0.8, 0.5, 0.5, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
     
     m4x4 Transform;
@@ -2052,6 +2079,22 @@ DisplayBuffer(open_gl *OpenGL, u32area PaintingRegion, pen_state PenState, canva
             0, 1, 0, 0,
             0, 0, 1, 0, 
             0, 0, 0, 1,};
+        
+        OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->ReferenceFramebuffer.ColorHandle);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        OpenGLProgramEnd(&OpenGL->TransferPixelsProgram);
+        
+        common_vertex Vertices2[] =
+        {
+            {{-ReferenceLimits.Right, -ReferenceLimits.Bottom, 0, 1}, {0, 1}, {}},
+            {{-ReferenceLimits.Right, -ReferenceLimits.Top,    0, 1}, {0, 0}, {}},
+            {{-ReferenceLimits.Left,  -ReferenceLimits.Bottom, 0, 1}, {1, 1}, {}},
+            {{-ReferenceLimits.Left,  -ReferenceLimits.Top,    0, 1}, {1, 0}, {}},
+        };
+        glBindBuffer(GL_ARRAY_BUFFER, OpenGL->VertexBuffer);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertices2), Vertices2);
         
         OpenGLProgramBegin(&OpenGL->TransferPixelsProgram, Transform);
         glBindTexture(GL_TEXTURE_2D, OpenGL->ReferenceFramebuffer.ColorHandle);
@@ -2337,7 +2380,15 @@ DisplayStreamFrame(open_gl *OpenGL, pen_state PenState, pen_target *PenHistory, 
             0, 0, 1, 0, 
             0, 0, 0, 1,};
         
-        RenderCanvas(OpenGL, Canvas, Transform, PenState);
+        // TODO(Zyonji): Make the Reference code more structured.
+        glBindTexture(GL_TEXTURE_2D, OpenGL->CanvasFramebuffer.ColorHandle);
+        
+        glGenerateMipmap(GL_TEXTURE_2D);
+        OpenGLProgramBegin(&OpenGL->ConvertToRGBProgram, Transform);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        OpenGLProgramEnd(&OpenGL->ConvertToRGBProgram);
+        
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
     
     SwapBuffers(wglGetCurrentDC());

@@ -7,6 +7,10 @@
 #define PEN_BUTTON_MODE_FLIPPED  0x0200
 #define MENU_MODE_AB             0x0400
 #define LINE_PEN_MODE            0x1000
+#define COLOR_LIMIT_LUMINANCE    0x6000
+#define COLOR_LIMIT_DARK         0x2000
+#define COLOR_LIMIT_LIGHT        0x4000
+#define COLOR_LIMIT_OFFSET       13
 
 struct menu_state
 {
@@ -48,6 +52,7 @@ struct menu_state
     u32area LButton;
     u32area abButton;
     u32area chButton;
+    u32area LLimitToggle;
 };
 struct pen_base
 {
@@ -90,7 +95,7 @@ typedef PICK_COLOR(pick_color);
 typedef UPDATE_MENU(update_menu);
 #define RENDER_BRUSH_STROKE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NewPen)
 typedef RENDER_BRUSH_STROKE(render_brush_stroke);
-#define RENDER_LINE(name) void name(canvas_state Canvas, pen_target NextPen)
+#define RENDER_LINE(name) void name(canvas_state Canvas, pen_target OldPen, pen_target NextPen)
 typedef RENDER_LINE(render_line);
 
 #include "orcahex_replay.h"
@@ -135,92 +140,6 @@ internal RENDER_LINE(CPURenderLine)
     LogError("The undefined default line rendering function was used.", "OrcaHex");
 }
 
-#if 0
-// NOTE(Zyonji): This uses  2.2 and 2.4 exponents as approximation.  This is mainly visible in the darker ranges.
-internal v3
-ConvertRGBtoXYZ(v3 RGB)
-{
-    v3 Result;
-    Result = {Inner(RGB, { 20416.0 / 41085.0,  2533.0 /  7470.0,   245.0 /  1494.0}), Inner(RGB, {   319.0 /  1245.0,  2533.0 /  3735.0,    49.0 /   747.0}), Inner(RGB, {   957.0 / 41085.0,  2533.0 / 22410.0,  3871.0 /  4482.0})};
-    return(Result);
-}
-internal v3
-ConvertXYZtoRGB(v3 XYZ)
-{
-    v3 Result;
-    Result = {Inner(XYZ, {    78.0 /    29.0,   -37.0 /    29.0,   -12.0 /    29.0}),Inner(XYZ, { -2589.0 /  2533.0,  5011.0 /  2533.0,   111.0 /  2533.0}), Inner(XYZ, {     3.0 /    49.0,   -11.0 /    49.0,    57.0 /    49.0})};
-    return(Result);
-}
-internal v3
-ConvertRGBToLab(v3 RGB)
-{
-    v3 Result = {};
-    v3 Linear = {(r32)pow(RGB.r, 2.2f), (r32)pow(RGB.g, 2.2f), (r32)pow(RGB.b, 2.2f)};
-    v3 XYZ = ConvertRGBtoXYZ(Linear);
-    v3 Cubic = {(r32)pow(XYZ.x, 1.0 / 2.4f), (r32)pow(XYZ.y, 1.0 / 2.4f), (r32)pow(XYZ.z, 1.0 / 2.4f)};
-    Result = {Cubic.y, Cubic.x - Cubic.y, Cubic.y - Cubic.z};
-    return(Result);
-}
-internal v3
-ConvertLabToRGB(v3 Lab)
-{
-    v3 Result = {};
-    v3 Cubic = {Lab.y + Lab.x, Lab.x, Lab.x - Lab.z};
-    v3 XYZ = {(r32)pow(Cubic.x, 3), (r32)pow(Cubic.y, 3), (r32)pow(Cubic.z, 3)};
-    v3 Linear = ConvertXYZtoRGB(XYZ);
-    Result = {(r32)pow(Linear.r, 1.0 / 2.4f), (r32)pow(Linear.g, 1.0 / 2.4f), (r32)pow(Linear.b, 1.0 / 2.4f)};
-    return(Result);
-}
-internal v4
-GetABLimits(v3 RGB)
-{
-    v4 Result = {};
-    v3 Linear = {(r32)pow(RGB.r, 2.2f), (r32)pow(RGB.g, 2.2f), (r32)pow(RGB.b, 2.2f)};
-    r32 Y = Inner(Linear, {   319.0 /  1245.0,  2533.0 /  3735.0,    49.0 /   747.0});
-    v3 Color[] = {
-        {Y / (319.0f / 1245.0f), 0, 0},
-        {0, Y / (2533.0f / 3735.0f), 0},
-        {0, 0, Y / (49.0f / 747.0f)},
-        {(Y - 2533.0f / 3735.0f) / (319.0f / 1245.0f), 1, 0},
-        {0, (Y - 49.0f / 747.0f) / (2533.0f / 3735.0f), 1},
-        {1, 0, (Y - 319.0f / 1245.0f) / (49.0f / 747.0f)},
-        {(Y - 49.0f / 747.0f) / (319.0f / 1245.0f), 0, 1},
-        {1, (Y - 319.0f / 1245.0f) / (2533.0f / 3735.0f), 0},
-        {0, 1, (Y - 2533.0f / 3735.0f) / (49.0f / 747.0f)},
-        {(Y - 2533.0f / 3735.0f - 49.0f / 747.0f) / (319.0f / 1245.0f), 1, 1},
-        {1, (Y - 49.0f / 747.0f - 319.0f / 1245.0f) / (2533.0f / 3735.0f), 1},
-        {1, 1, (Y - 319.0f / 1245.0f - 2533.0f / 3735.0f) / (49.0f / 747.0f)},
-    };
-    b32 Empty = true;
-    for(u32 I = 0; I < 12; ++I)
-    {
-        if(Color[I].r >= 0 && Color[I].r <= 1 && Color[I].g >= 0 && Color[I].g <= 1 && Color[I].b >= 0 && Color[I].b <= 1)
-        {
-            v3 Lab = ConvertRGBToLab(Color[I]);
-            if(Lab.y < Result.x || Empty)
-            {
-                Result.x = Lab.y;
-            }
-            if(Lab.y > Result.y || Empty)
-            {
-                Result.y = Lab.y;
-            }
-            if(Lab.z < Result.z || Empty)
-            {
-                Result.z = Lab.z;
-            }
-            if(Lab.z > Result.w || Empty)
-            {
-                Result.w = Lab.z;
-            }
-            Empty = false;
-        }
-    }
-    return(Result);
-}
-
-#else
-
 internal v3
 ConvertRGBToLab(v3 RGB)
 {
@@ -247,8 +166,8 @@ ConvertRGBToLab(v3 RGB)
     z = (z > 0.008856) ? pow(z, 1.0 / 3.0) : (7.787 * z + 0.160 / 1.160);
     
     Result.x = (r32)((1.160 * y) - 0.160);
-    Result.y = (r32)(5.000 * (x - y));
-    Result.z = (r32)(2.000 * (y - z));
+    Result.y = (r32)(1.25 * (x - y) + 0.5);
+    Result.z = (r32)(0.5 * (y - z) + 0.5);
     
     return(Result);
 }
@@ -258,8 +177,8 @@ ConvertLabToRGB(v3 Lab)
     v3 Result;
     
     r64 y = (Lab.x + 0.160) / 1.160;
-    r64 x = Lab.y / 5.000 + y;
-    r64 z = y - Lab.z / 2.000;
+    r64 x = (Lab.y - 0.5) / 1.25 + y;
+    r64 z = y - (Lab.z - 0.5) / 0.5;
     
     r64 x3 = x * x * x;
     r64 y3 = y * y * y;
@@ -283,13 +202,6 @@ ConvertLabToRGB(v3 Lab)
     
     return(Result);
 }
-internal r32
-GetABLimit(v3 Lab)
-{
-    r32 Result = 1.35f;
-    return(Result);
-}
-#endif
 
 internal v3
 ValidatedRGBfromLab(v3 Lab)
@@ -318,6 +230,34 @@ ValidatedRGBfromLab(v3 Lab)
     else
     {
         Result = RGB;
+    }
+    
+    return(Result);
+}
+
+internal v3
+ValidatedLabForRGB(v3 Lab)
+{
+    v3 Result = Lab;
+    
+    v3 RGB = ConvertLabToRGB(Lab);
+    v3 Grey = ConvertLabToRGB({Lab.x, 0.5, 0.5});
+    v3 RGBVector = Grey - RGB;
+    v3 ScaleA = {RGBVector.x / Grey.x, RGBVector.y / Grey.y, RGBVector.z / Grey.z};
+    v3 ScaleB = {-RGBVector.x / (1 - Grey.x), -RGBVector.y / (1 - Grey.y), -RGBVector.z / (1 - Grey.z)};
+    r32 Distance = Maximum(Maximum(Maximum(ScaleA.x, ScaleB.x), Maximum(ScaleA.y, ScaleB.y)), Maximum(ScaleA.z, ScaleB.z));
+    
+    if(Lab.x <= 0)
+    {
+        Result = {0, 0.5, 0.5};
+    }
+    else if(Lab.x >= 1)
+    {
+        Result = {1, 0.5, 0.5};
+    }
+    else if(Distance > 1.0)
+    {
+        Result = ConvertRGBToLab(Grey - (RGBVector / Distance));
     }
     
     return(Result);
@@ -366,11 +306,25 @@ ChangeCanvasScale(canvas_state *Canvas, r32 Factor)
     r32 InverseScale = 1.0f / (Factor * Canvas->Scale);
     if(Canvas->Scale < 1 && Factor > 1)
     {
-        InverseScale= floorf(InverseScale);
+        if(InverseScale >= 1.5f && InverseScale < 2)
+        {
+            InverseScale = 1.5;
+        }
+        else
+        {
+            InverseScale = floorf(InverseScale);
+        }
     }
     if(InverseScale > 1 && Factor < 1)
     {
-        InverseScale = ceilf(InverseScale);
+        if(InverseScale <= 1.5f)
+        {
+            InverseScale = 1.5f;
+        }
+        else
+        {
+            InverseScale = ceilf(InverseScale);
+        }
     }
     Canvas->Center = (1.0f / (InverseScale * Canvas->Scale)) * Canvas->Center;
     Canvas->Scale = 1.0f / InverseScale;
@@ -457,20 +411,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         
         if(PickColorButton)
         {
-            if(P.x >= Menu.Alpha.x + (Menu.Steps - 1) * Menu.Offset.x && P.x < Menu.Alpha.x + Menu.Alpha.Width&& P.y >= Menu.Alpha.y && P.y < Menu.Alpha.y + Menu.Alpha.Height + (Menu.Steps - 1) * Menu.Offset.y)
-            {
-                r32 Distance = fabsf(P.y - Menu.Alpha.y);
-                r32 Temp = fabsf(P.x - (Menu.Alpha.x + Menu.Alpha.Width));
-                if(Temp > Distance)
-                {
-                    Distance = Temp;
-                }
-                PenTarget.Color.a = 1.0f - (r32)((u32)Distance / Menu.Alpha.Height) / (Menu.Steps - 1);
-            }
-            else
-            {
-                PenTarget.Color = OrcaState->PickColor(Point);
-            }
+            PenTarget.Color = OrcaState->PickColor(Point);
             OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
         }
         
@@ -478,7 +419,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
         {
             if(Inside(Menu.New, P))
             {
-                RequestEmptyFile(OrcaState->MaxId, OrcaState->PaintingRegion, 4000, 6000);
+                RequestEmptyFile(OrcaState->MaxId, OrcaState->PaintingRegion, 2400, 3600);
             }
             else if(Inside(Menu.Open, P))
             {
@@ -560,6 +501,16 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
                 PenTarget.Mode ^= COLOR_MODE_ALPHA;
                 OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
             }
+            else if(Inside(Menu.LLimitToggle, P))
+            {
+                u32 LimitMode = ((PenTarget.Mode + (1 << COLOR_LIMIT_OFFSET)) & COLOR_LIMIT_LUMINANCE);
+                PenTarget.Mode &= ~COLOR_LIMIT_LUMINANCE;
+                if(LimitMode != COLOR_LIMIT_LUMINANCE)
+                {
+                    PenTarget.Mode |= LimitMode;
+                }
+                OrcaState->UpdateMenu(&OrcaState->Menu, PenTarget.Color, PenTarget.Mode);
+            }
             else if(Inside(Menu.LButton, P))
             {
                 PenTarget.Mode ^= COLOR_MODE_LUMINANCE;
@@ -624,11 +575,7 @@ ProcessBrushMove(orca_state *OrcaState, pen_target PenTarget, v2 Point, u32 Butt
             // TODO(Zyonji): Temporary test line drawing code.
             if(PenTarget.Mode & LINE_PEN_MODE)
             {
-                if(PenState->Pressure <= 0)
-                {
-                    OrcaState->RenderLine(OrcaState->Canvas, *PenState);
-                }
-                OrcaState->RenderLine(OrcaState->Canvas, PenTarget);
+                OrcaState->RenderLine(OrcaState->Canvas, *PenState, PenTarget);
             }
             else
             {
